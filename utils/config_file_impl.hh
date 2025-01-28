@@ -205,7 +205,10 @@ void utils::config_file::named_value<T>::add_command_line_option(boost::program_
 }
 
 template<typename T>
-void utils::config_file::named_value<T>::set_value(const YAML::Node& node) {
+void utils::config_file::named_value<T>::set_value(const YAML::Node& node, config_source src) {
+    if (src == config_source::SettingsFileAfterSighup && _liveness != liveness::LiveUpdate) {
+        return;
+    }
     if (_source == config_source::SettingsFile && _liveness != liveness::LiveUpdate) {
         // FIXME: warn if different?
         return;
@@ -225,7 +228,10 @@ bool utils::config_file::named_value<T>::set_value(sstring value, config_source 
 }
 
 template<typename T>
-future<> utils::config_file::named_value<T>::set_value_on_all_shards(const YAML::Node& node) {
+future<> utils::config_file::named_value<T>::set_value_on_all_shards(const YAML::Node& node, config_source src) {
+    if (src == config_source::SettingsFileAfterSighup && _liveness != liveness::LiveUpdate) {
+        co_return;
+    }
     if (_source == config_source::SettingsFile && _liveness != liveness::LiveUpdate) {
         // FIXME: warn if different?
         co_return;

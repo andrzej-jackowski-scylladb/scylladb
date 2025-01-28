@@ -867,6 +867,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             // in all supported architectures, and the broadcast_to_all_shards().get() below
             // will apply the required memory barriers anyway.
             ser::gc_clock_using_3_1_0_serialization = cfg->enable_3_1_0_compatibility_mode();
+            cfg->set_initial_config_file_reading_completed();
 
             cfg->broadcast_to_all_shards().get();
 

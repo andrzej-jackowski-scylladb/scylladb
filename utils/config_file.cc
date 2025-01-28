@@ -226,7 +226,7 @@ sstring utils::hyphenate(const std::string_view& v) {
 }
 
 utils::config_file::config_file(std::initializer_list<cfg_ref> cfgs)
-    : _cfgs(cfgs)
+    : _cfgs(cfgs), _initial_config_file_reading_completed(false)
 {}
 
 void utils::config_file::add(cfg_ref cfg, std::unique_ptr<any_value> value) {
@@ -331,7 +331,8 @@ void utils::config_file::read_from_yaml(const char* yaml, error_handler h) {
         }
         // Still, a syntax error is an error warning, not a fail
         try {
-            cfg.set_value(node.second);
+            config_source source = this->_initial_config_file_reading_completed ? config_source::SettingsFileAfterSighup : config_source::SettingsFile;
+            cfg.set_value(node.second, source);
         } catch (std::exception& e) {
             h(label, e.what(), cfg.status());
         } catch (...) {
@@ -423,6 +424,10 @@ future<> utils::config_file::broadcast_to_all_shards() {
     });
 }
 
+void utils::config_file::set_initial_config_file_reading_completed() {
+    _initial_config_file_reading_completed = true;
+}
+
 sstring utils::config_file::config_src::source_name() const noexcept {
     auto src = source();
 
@@ -430,6 +435,9 @@ sstring utils::config_file::config_src::source_name() const noexcept {
     case utils::config_file::config_source::None:
         return "default";
     case utils::config_file::config_source::SettingsFile:
+        return "config";
+    case utils::config_file::config_source::SettingsFileAfterSighup:
+        // The same as SettingsFile for compatibility
         return "config";
     case utils::config_file::config_source::CommandLine:
         return "cli";
