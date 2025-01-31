@@ -162,6 +162,9 @@ future<> password_authenticator::start() {
                         return;
                     }
                 }
+                while(utils::get_local_injector().enter("password_authenticator_start_pause")) {
+                    seastar::sleep(10ms).get();
+                }
                 create_default_if_missing().get();
             });
         });
