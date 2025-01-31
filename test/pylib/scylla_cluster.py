@@ -1020,11 +1020,12 @@ class ScyllaCluster:
                           start: bool = True,
                           seeds: Optional[List[IPAddress]] = None,
                           server_encryption: str = "none",
-                          expected_error: Optional[str] = None) -> List[ServerInfo]:
+                          expected_error: Optional[str] = None,
+                          expected_server_up_state: ServerUpState = ServerUpState.CQL_QUERIED) -> List[ServerInfo]:
         """Add multiple servers to the cluster concurrently"""
         assert servers_num > 0, f"add_servers: cannot add {servers_num} servers"
 
-        return await gather_safely(*(self.add_server(None, cmdline, config, property_file, start, seeds, server_encryption, expected_error)
+        return await gather_safely(*(self.add_server(None, cmdline, config, property_file, start, seeds, server_encryption, expected_error, expected_server_up_state)
                                       for _ in range(servers_num)))
 
     def endpoint(self) -> str:
@@ -1580,7 +1581,8 @@ class ScyllaClusterManager:
         data = await request.json()
         s_infos = await self.cluster.add_servers(data.get('servers_num'), data.get('cmdline'), data.get('config'),
                                                  data.get('property_file'), data.get('start', True),
-                                                 data.get('seeds', None), data.get('server_encryption'), data.get('expected_error', None))
+                                                 data.get('seeds', None), data.get('server_encryption'), data.get('expected_error', None),
+                                                 getattr(ServerUpState, data.get('expected_server_up_state', "CQL_QUERIED")))
         return [s_info.as_dict() for s_info in s_infos]
 
     async def _cluster_remove_node(self, request: aiohttp.web.Request) -> None:

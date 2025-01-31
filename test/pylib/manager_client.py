@@ -379,7 +379,8 @@ class ManagerClient():
                           seeds: Optional[List[IPAddress]] = None,
                           driver_connect_opts: dict[str, Any] = {},
                           expected_error: Optional[str] = None,
-                          server_encryption: str = "none") -> List[ServerInfo]:
+                          server_encryption: str = "none",
+                          expected_server_up_state: Optional[ServerUpState] = None) -> List[ServerInfo]:
         """Add new servers concurrently.
         This function can be called only if the cluster uses consistent topology changes, which support
         concurrent bootstraps. If your test does not fulfill this condition and you want to add multiple
@@ -387,7 +388,7 @@ class ManagerClient():
         assert servers_num > 0, f"servers_add: cannot add {servers_num} servers, servers_num must be positive"
 
         try:
-            data = self._create_server_add_data(None, cmdline, config, property_file, start, seeds, expected_error, server_encryption, None)
+            data = self._create_server_add_data(None, cmdline, config, property_file, start, seeds, expected_error, server_encryption, expected_server_up_state)
             data['servers_num'] = servers_num
             server_infos = await self.client.put_json("/cluster/addservers", data, response_type="json",
                                                       timeout=ScyllaServer.TOPOLOGY_TIMEOUT * servers_num)
@@ -409,7 +410,7 @@ class ManagerClient():
                 raise RuntimeError(f"servers_add got invalid server data {server_info}") from exc
 
         logger.debug("ManagerClient added %s", s_infos)
-        if expected_error is None:
+        if (expected_error is None) and (expected_server_up_state not in [ServerUpState.PROCESS_STARTED, ServerUpState.HOST_ID_QUERIED]):
             if self.cql:
                 self._driver_update()
             elif start:
