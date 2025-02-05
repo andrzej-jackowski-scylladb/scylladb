@@ -2124,6 +2124,7 @@ struct multi_column_range_accumulator {
     const clustering_key_prefix::prefix_equal_tri_compare prefix3cmp = get_unreversed_tri_compare(*schema);
 
     void operator()(const binary_operator& binop) {
+        rlogger.info("Accumulator binop={}", binop);
         auto& lhs = expr::as<tuple_constructor>(binop.lhs);
         if (is_compare(binop.op)) {
             auto opt_values = expr::get_tuple_elements(expr::evaluate(binop.rhs, options), *type_of(binop.rhs));
@@ -2229,6 +2230,7 @@ struct multi_column_range_accumulator {
     /// Intersects each range with v.  If any intersection is empty, clears ranges.
     void intersect_all(const query::clustering_range& v) {
         for (auto& r : ranges) {
+            rlogger.info("Calling intersection r={} v={}", r, v);
             auto intrs = intersection(r, v, prefix3cmp);
             if (!intrs) {
                 ranges.clear();
@@ -2584,12 +2586,14 @@ query::clustering_range range_from_raw_bounds(
 } // anonymous namespace
 
 std::vector<query::clustering_range> statement_restrictions::get_clustering_bounds(const query_options& options) const {
+    expr_logger.info("In get_clustering_bounds");
     if (_clustering_prefix_restrictions.empty()) {
         return {query::clustering_range::make_open_ended_both_sides()};
     }
     if (find_binop(_clustering_prefix_restrictions[0], is_multi_column)) {
         bool all_natural = true, all_reverse = true; ///< Whether column types are reversed or natural.
         for (auto& r : _clustering_prefix_restrictions) { // TODO: move to constructor, do only once.
+            expr_logger.info("Clustering Prefix Restriction: {}", r);
             using namespace expr;
             const auto& binop = expr::as<binary_operator>(r);
             if (is_clustering_order(binop)) {
@@ -2605,6 +2609,7 @@ std::vector<query::clustering_range> statement_restrictions::get_clustering_boun
             }
         }
         auto bounds = get_multi_column_clustering_bounds(options, _schema, _clustering_prefix_restrictions);
+        expr_logger.info("all_natural={} all_reverse={} bounds={}", all_natural, all_reverse, fmt::join(bounds, ","));
         if (!all_natural && !all_reverse) {
             std::vector<query::clustering_range> bounds_in_clustering_order;
             for (const auto& b : bounds) {
@@ -2618,6 +2623,7 @@ std::vector<query::clustering_range> statement_restrictions::get_clustering_boun
                 crange = query::clustering_range(crange.end(), crange.start());
             }
         }
+        expr_logger.info("returning bounds={}", fmt::join(bounds, ","));
         return bounds;
     } else {
         return get_single_column_clustering_bounds(options, *_schema, _clustering_prefix_restrictions);

@@ -379,6 +379,7 @@ select_statement::do_execute(query_processor& qp,
                           service::query_state& state,
                           const query_options& options) const
 {
+    logger.info("EXECUTING SELECT xD ks={} cf={} restrictions_need_filtering={}, clustering_restrictions{}", _schema->ks_name(), _schema->cf_name(), _restrictions_need_filtering, _restrictions->get_clustering_columns_restrictions());
     (void)validation::validate_column_family(qp.db(), keyspace(), column_family());
 
     tracing::add_table_name(state.get_trace_state(), keyspace(), column_family());
