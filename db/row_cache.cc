@@ -1399,6 +1399,7 @@ mutation_reader cache_entry::read(row_cache& rc, std::unique_ptr<read_context> u
 mutation_reader cache_entry::do_read(row_cache& rc, read_context& reader) {
     auto snp = _pe.read(rc._tracker.region(), rc._tracker.cleaner(), &rc._tracker, reader.phase());
     auto ckr = query::clustering_key_filter_ranges::get_ranges(*schema(), reader.native_slice(), _key.key());
+    clogger.info("CURRENT ckr={}", ckr);
     schema_ptr entry_schema = to_query_domain(reader.slice(), schema());
     auto r = make_cache_mutation_reader(entry_schema, _key, std::move(ckr), rc, reader, std::move(snp));
     r.upgrade_schema(to_query_domain(reader.slice(), rc.schema()));

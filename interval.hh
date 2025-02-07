@@ -66,6 +66,10 @@ public:
 template<typename T>
 class interval;
 
+namespace query {
+    class my_interval;
+}
+
 // An interval which can have inclusive, exclusive or open-ended bounds on each end.
 // The end bound can be smaller than the start bound.
 template<typename T>
@@ -428,6 +432,7 @@ public:
 
 private:
     friend class interval<T>;
+    friend class ::query::my_interval;
 };
 
 template<typename U>

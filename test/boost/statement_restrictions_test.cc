@@ -17,9 +17,12 @@
 #include "cql3/restrictions/statement_restrictions.hh"
 #include "cql3/expr/expr-utils.hh"
 #include "cql3/util.hh"
+#include "interval.hh"
 #include "test/lib/cql_assertions.hh"
 #include "test/lib/cql_test_env.hh"
 #include "test/lib/test_utils.hh"
+
+
 
 BOOST_AUTO_TEST_SUITE(statement_restrictions_test)
 
@@ -518,5 +521,154 @@ BOOST_AUTO_TEST_CASE(expression_extract_column_restrictions) {
     assert_expr_vec_eq(restrictions::extract_single_column_restrictions_for_column(big_where_expr, col_r3),
         {});
 }
+
+
+clustering_key_prefix::prefix_equal_tri_compare get_unreversed_tri_compare(const schema& schema) {
+    clustering_key_prefix::prefix_equal_tri_compare cmp(schema);
+    std::vector<data_type> types = cmp.prefix_type->types();
+    for (auto& t : types) {
+        if (t->is_reversed()) {
+            t = t->underlying_type();
+        }
+    }
+    cmp.prefix_type = make_lw_shared<compound_type<allow_prefixes::yes>>(types);
+    return cmp;
+}
+
+
+/// True iff r1 start is before (or identical as) r2 end.
+bool starts_before_or_at_end(
+        const query::clustering_range& r1,
+        const query::clustering_range& r2,
+        const clustering_key_prefix::prefix_equal_tri_compare& cmp) {
+    if (!r1.start()) {
+        return true; // r1 start is -inf, must be before r2 end.
+    }
+    if (!r2.end()) {
+        return true; // r2 end is +inf, everything is before it.
+    }
+    const auto diff = cmp(r1.start()->value(), r2.end()->value());
+    if (diff < 0) { // r1 start is strictly before r2 end.
+        return true;
+    }
+    if (diff > 0) { // r1 start is strictly after r2 end.
+        return false;
+    }
+    const auto len1 = r1.start()->value().representation().size();
+    const auto len2 = r2.end()->value().representation().size();
+    if (len1 == len2) { // The values truly are equal.
+        // (a)>=(1) starts at end of (a)<=(1)
+        return r1.start()->is_inclusive() && r2.end()->is_inclusive();
+    } else if (len1 < len2) { // r1 start is a prefix of r2 end.
+        // a>=(1) starts before (a,b)<=(1,1) ends, but (a)>(1) doesn't.
+        return r1.start()->is_inclusive();
+    } else { // r2 end is a prefix of r1 start.
+        // (a,b)>=(1,1) starts before (a)<=(1) ends but after (a)<(1) ends.
+        return r2.end()->is_inclusive();
+    }
+}
+
+/// True if r1 end is strictly before r2 end.
+bool ends_before_end(
+        const query::clustering_range& r1,
+        const query::clustering_range& r2,
+        const clustering_key_prefix::prefix_equal_tri_compare& cmp) {
+    if (!r1.end()) {
+        return false; // r1 end is +inf, which is after everything.
+    }
+    if (!r2.end()) {
+        return true; // r2 end is +inf, while r1 end is finite.
+    }
+    const auto diff = cmp(r1.end()->value(), r2.end()->value());
+    if (diff < 0) { // r1 end is strictly before r2 end.
+        return true;
+    }
+    if (diff > 0) { // r1 end is strictly after r2 end.
+        return false;
+    }
+    const auto len1 = r1.end()->value().representation().size();
+    const auto len2 = r2.end()->value().representation().size();
+    if (len1 == len2) { // The values truly are equal.
+        // (a)<(1) ends before (a)<=(1) ends
+        return !r1.end()->is_inclusive() && r2.end()->is_inclusive();
+    } else if (len1 < len2) { // r1 end is a prefix of r2 end.
+        // (a)<(1) ends before (a,b)<=(1,1), but (a)<=(1) doesn't.
+        return !r1.end()->is_inclusive();
+    } else { // r2 end is a prefix of r1 end.
+        // (a,b)<=(1,1) ends before (a)<=(1) but after (a)<(1).
+        return r2.end()->is_inclusive();
+    }
+}
+
+bool starts_before_start(
+        const query::clustering_range& r1,
+        const query::clustering_range& r2,
+        const clustering_key_prefix::prefix_equal_tri_compare& cmp) {
+    if (!r2.start()) {
+        return false; // r2 start is -inf, nothing is before that.
+    }
+    if (!r1.start()) {
+        return true; // r1 start is -inf, while r2 start is finite.
+    }
+    const auto diff = cmp(r1.start()->value(), r2.start()->value());
+    if (diff < 0) { // r1 start is strictly before r2 start.
+        return true;
+    }
+    if (diff > 0) { // r1 start is strictly after r2 start.
+        return false;
+    }
+    const auto len1 = r1.start()->value().representation().size();
+    const auto len2 = r2.start()->value().representation().size();
+    if (len1 == len2) { // The values truly are equal.
+        // (a)>=(1) starts before (a)>(1)
+        return r1.start()->is_inclusive() && !r2.start()->is_inclusive();
+    } else if (len1 < len2) { // r1 start is a prefix of r2 start.
+        // (a)>=(1) starts before (a,b)>=(1,1), but (a)>(1) doesn't.
+        return r1.start()->is_inclusive();
+    } else { // r2 start is a prefix of r1 start.
+        // (a,b)>=(1,1) starts before (a)>(1) but after (a)>=(1).
+        return !r2.start()->is_inclusive();
+    }
+}
+
+/// Correct clustering_range intersection.  See #8157.
+std::optional<query::clustering_range> intersection(
+        const query::clustering_range& r1,
+        const query::clustering_range& r2,
+        const clustering_key_prefix::prefix_equal_tri_compare& cmp) {
+    // If needed, swap r1 and r2 so that r1's start is to the left of r2's
+    // start. Note that to avoid infinite recursion (#18688) the function
+    // starts_before_start() must never return true for both (r1,r2) and
+    // (r2,r1) - in other words, it must be a *strict* partial order.
+    if (starts_before_start(r2, r1, cmp)) {
+        return intersection(r2, r1, cmp);
+    }
+    if (!starts_before_or_at_end(r2, r1, cmp)) {
+        return {};
+    }
+    const auto& intersection_start = r2.start();
+    const auto& intersection_end = ends_before_end(r1, r2, cmp) ? r1.end() : r2.end();
+    if (intersection_start == intersection_end && intersection_end.has_value()) {
+        return query::clustering_range::make_singular(intersection_end->value());
+    }
+    return query::clustering_range(intersection_start, intersection_end);
+}
+
+/* TODO
+SEASTAR_TEST_CASE(clustering_range_intersection) {
+    return do_with_cql_env_thread([](cql_test_env& env) {
+        cquery_nofail(env, "CREATE TABLE ks.t(id int, ck1 int, ck2 int, ck3 int, r int, PRIMARY KEY (id, ck1, ck2, ck3))");
+        auto schema = env.local_db().find_schema("ks", "t");
+        const clustering_key_prefix::prefix_equal_tri_compare prefix3cmp = get_unreversed_tri_compare(*schema);
+        auto rAstart = left_closed({I(1), I(1)});
+        auto rBend = right_open({I(1), I(1), I(1)});
+        interval interv = intersection(rAstart, rBend, prefix3cmp).value();
+
+        interval<clustering_key_prefix> empty;
+
+        BOOST_CHECK_EQUAL(interv, empty);
+    });
+}
+*/
 
 BOOST_AUTO_TEST_SUITE_END()

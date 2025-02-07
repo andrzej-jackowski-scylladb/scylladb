@@ -248,6 +248,7 @@ public:
     cache_mutation_reader(cache_mutation_reader&&) = delete;
     virtual future<> fill_buffer() override;
     virtual future<> next_partition() override {
+        clogger.info("IN next_partition");
         clear_buffer_to_next_partition();
         if (is_buffer_empty()) {
             _end_of_stream = true;
@@ -321,7 +322,7 @@ future<> cache_mutation_reader::fill_buffer() {
             return after_static_row();
         }
     }
-    clogger.trace("csm {}: fill_buffer(), range={}, lb={}", fmt::ptr(this), *_ck_ranges_curr, _lower_bound);
+    clogger.info("csm {}: fill_buffer(), range={}, lb={}", fmt::ptr(this), *_ck_ranges_curr, _lower_bound);
     return do_until([this] { return _end_of_stream || is_buffer_full(); }, [this] {
         return do_fill_buffer();
     });
@@ -346,6 +347,7 @@ future<> cache_mutation_reader::ensure_underlying() {
 
 inline
 future<> cache_mutation_reader::do_fill_buffer() {
+    clogger.info("IN do_fill_buffer");
     if (_state == state::move_to_underlying) {
         if (!_underlying) {
             return ensure_underlying().then([this] {
@@ -426,7 +428,7 @@ future<> cache_mutation_reader::read_from_underlying() {
             _state = state::reading_from_cache;
             _lsa_manager.run_in_update_section([this] {
                 auto same_pos = _next_row.maybe_refresh();
-                clogger.trace("csm {}: underlying done, in_range={}, same={}, next={}", fmt::ptr(this), _next_row_in_range, same_pos, _next_row);
+                clogger.info("csm {}: underlying done, in_range={}, same={}, next={}", fmt::ptr(this), _next_row_in_range, same_pos, _next_row);
                 if (!same_pos) {
                     _read_context.cache().on_mispopulate(); // FIXME: Insert dummy entry at _lower_bound.
                     _next_row_in_range = !after_current_range(_next_row.position());
@@ -881,6 +883,7 @@ void cache_mutation_reader::move_to_next_range() {
 
 inline
 void cache_mutation_reader::move_to_range(query::clustering_row_ranges::const_iterator next_it) {
+    clogger.info("In move_to_range: {}", *next_it);
     auto lb = position_in_partition::for_range_start(*next_it);
     auto ub = position_in_partition_view::for_range_end(*next_it);
     _last_row = nullptr;

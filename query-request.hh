@@ -21,6 +21,7 @@
 #include "dht/ring_position.hh"
 #include "enum_set.hh"
 #include "interval.hh"
+#include "replica/database_fwd.hh"
 #include "tracing/tracing.hh"
 #include "utils/small_vector.hh"
 #include "db/per_partition_rate_limit_info.hh"
@@ -53,8 +54,283 @@ using ring_position = dht::ring_position;
 // key prefixes. Inclusiveness of the range's bounds must be taken into account during comparisons.
 // For example, consider clustering key type consisting of two ints. Then [0:1, 0:] is a valid non-empty range
 // (e.g. it includes the key 0:2) even though 0: < 0:1 w.r.t the clustering prefix order.
-using clustering_range = interval<clustering_key_prefix>;
+class my_interval {
+    template <typename U>
+    using optional = std::optional<U>;
+public:
+    using bound = interval_bound<clustering_key_prefix>;
 
+    template <typename Transformer>
+    using transformed_type = typename wrapping_interval<clustering_key_prefix>::template transformed_type<Transformer>;
+private:
+    wrapping_interval<clustering_key_prefix> _interval;
+public:
+    my_interval(clustering_key_prefix value)
+        : _interval(std::move(value))
+    { }
+    my_interval() : my_interval({}, {}) { }
+    // Can only be called if start <= end. IDL ctor.
+    my_interval(optional<bound> start, optional<bound> end, bool singular = false)
+        : _interval(std::move(start), std::move(end), singular)
+    { }
+    // Can only be called if !r.is_wrap_around().
+    explicit my_interval(wrapping_interval<clustering_key_prefix>&& r)
+        : _interval(std::move(r))
+    { }
+    // Can only be called if !r.is_wrap_around().
+    explicit my_interval(const wrapping_interval<clustering_key_prefix>& r)
+        : _interval(r)
+    { }
+
+    explicit my_interval(interval<clustering_key_prefix>&& r)
+        : _interval(std::move(r))
+    { }
+
+    operator wrapping_interval<clustering_key_prefix>() const & {
+        return _interval;
+    }
+    operator wrapping_interval<clustering_key_prefix>() && {
+        return std::move(_interval);
+    }
+
+    // the point is before the interval.
+    // Comparator must define a total ordering on T.
+    bool before(const clustering_key_prefix& point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        return _interval.before(point, std::forward<decltype(cmp)>(cmp));
+    }
+    // the other interval is before this interval.
+    // Comparator must define a total ordering on T.
+    bool other_is_before(const clustering_key_prefix& o, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        return _interval.other_is_before(o, std::forward<decltype(cmp)>(cmp));
+    }
+    // the point is after the interval.
+    // Comparator must define a total ordering on T.
+    bool after(const clustering_key_prefix& point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        return _interval.after(point, std::forward<decltype(cmp)>(cmp));
+    }
+    // check if two intervals overlap.
+    // Comparator must define a total ordering on T.
+    bool overlaps(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        // if both this and other have an open start, the two intervals will overlap.
+        if (!start() && !other.start()) {
+            return true;
+        }
+
+        return wrapping_interval<clustering_key_prefix>::greater_than_or_equal(_interval.end_bound(), other._interval.start_bound(), cmp)
+            && wrapping_interval<clustering_key_prefix>::greater_than_or_equal(other._interval.end_bound(), _interval.start_bound(), cmp);
+    }
+    static my_interval make(bound start, bound end) {
+        return my_interval({std::move(start)}, {std::move(end)});
+    }
+    static my_interval make_open_ended_both_sides() {
+        return {{}, {}};
+    }
+    static my_interval make_singular(clustering_key_prefix value) {
+        return {std::move(value)};
+    }
+    static my_interval make_starting_with(bound b) {
+        return {{std::move(b)}, {}};
+    }
+    static my_interval make_ending_with(bound b) {
+        return {{}, {std::move(b)}};
+    }
+    bool is_singular() const {
+        return _interval.is_singular();
+    }
+    bool is_full() const {
+        return _interval.is_full();
+    }
+    const optional<bound>& start() const {
+        return _interval.start();
+    }
+    const optional<bound>& end() const {
+        return _interval.end();
+    }
+    // the point is inside the interval
+    // Comparator must define a total ordering on T.
+    bool contains(const int& point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        return !before(point, cmp) && !after(point, cmp);
+    }
+    // Returns true iff all values contained by other are also contained by this.
+    // Comparator must define a total ordering on T.
+    bool contains(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        return wrapping_interval<clustering_key_prefix>::less_than_or_equal(_interval.start_bound(), other._interval.start_bound(), cmp)
+                && wrapping_interval<clustering_key_prefix>::greater_than_or_equal(_interval.end_bound(), other._interval.end_bound(), cmp);
+    }
+    // Returns intervals which cover all values covered by this interval but not covered by the other interval.
+    // Ranges are not overlapping and ordered.
+    // Comparator must define a total ordering on T.
+    std::vector<my_interval> subtract(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        auto subtracted = _interval.subtract(other._interval, std::forward<decltype(cmp)>(cmp));
+        return subtracted | std::views::transform([](auto&& r) {
+            return my_interval(std::move(r));
+        }) | std::ranges::to<std::vector>();
+    }
+    // split interval in two around a split_point. split_point has to be inside the interval
+    // split_point will belong to first interval
+    // Comparator must define a total ordering on T.
+    std::pair<my_interval, my_interval> split(const clustering_key_prefix& split_point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        SCYLLA_ASSERT(contains(split_point, std::forward<decltype(cmp)>(cmp)));
+        my_interval left(start(), bound(split_point));
+        my_interval right(bound(split_point, false), end());
+        return std::make_pair(std::move(left), std::move(right));
+    }
+    // Create a sub-interval including values greater than the split_point. If split_point is after
+    // the end, returns std::nullopt.
+    std::optional<my_interval> split_after(const clustering_key_prefix& split_point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        if (end() && cmp(split_point, end()->value()) >= 0) {
+            return std::nullopt;
+        } else if (start() && cmp(split_point, start()->value()) < 0) {
+            return *this;
+        } else {
+            return my_interval(interval_bound<clustering_key_prefix>(split_point, false), end());
+        }
+    }
+    // Creates a new sub-interval which is the intersection of this interval and an interval starting with "start".
+    // If there is no overlap, returns std::nullopt.
+    std::optional<my_interval> trim_front(std::optional<bound>&& start, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        return intersection(interval(std::move(start), {}), cmp);
+    }
+    // Transforms this interval into a new interval of a different value type
+    // Supplied transformer should transform value of type T (the old type) into value of type U (the new type).
+    template<typename Transformer, typename U = transformed_type<Transformer>>
+    interval<U> transform(Transformer&& transformer) && {
+        return interval<U>(std::move(_interval).transform(std::forward<Transformer>(transformer)));
+    }
+    template<typename Transformer, typename U = transformed_type<Transformer>>
+    interval<U> transform(Transformer&& transformer) const & {
+        return interval<U>(_interval.transform(std::forward<Transformer>(transformer)));
+    }
+
+    bool equal(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        return _interval.equal(other._interval, std::forward<decltype(cmp)>(cmp));
+    }
+    bool operator==(const my_interval& other) const {
+        return _interval == other._interval;
+    }
+    // Takes a vector of possibly overlapping intervals and returns a vector containing
+    // a set of non-overlapping intervals covering the same values.
+    template<IntervalComparatorFor<clustering_key_prefix> Comparator, typename IntervalVec>
+    requires requires (IntervalVec vec) {
+        { vec.begin() } -> std::random_access_iterator;
+        { vec.end() } -> std::random_access_iterator;
+        { vec.reserve(1) };
+        { vec.front() } -> std::same_as<my_interval&>;
+    }
+    static IntervalVec deoverlap(IntervalVec intervals, Comparator&& cmp) {
+        auto size = intervals.size();
+        if (size <= 1) {
+            return intervals;
+        }
+
+        std::sort(intervals.begin(), intervals.end(), [&](auto&& r1, auto&& r2) {
+            return wrapping_interval<clustering_key_prefix>::less_than(r1._interval.start_bound(), r2._interval.start_bound(), cmp);
+        });
+
+        IntervalVec deoverlapped_intervals;
+        deoverlapped_intervals.reserve(size);
+
+        auto&& current = intervals[0];
+        for (auto&& r : intervals | std::views::drop(1)) {
+            bool includes_end = wrapping_interval<clustering_key_prefix>::greater_than_or_equal(r._interval.end_bound(), current._interval.start_bound(), cmp)
+                                && wrapping_interval<clustering_key_prefix>::greater_than_or_equal(current._interval.end_bound(), r._interval.end_bound(), cmp);
+            if (includes_end) {
+                continue; // last.start <= r.start <= r.end <= last.end
+            }
+            bool includes_start = wrapping_interval<clustering_key_prefix>::greater_than_or_equal(current._interval.end_bound(), r._interval.start_bound(), cmp);
+            if (includes_start) {
+                current = my_interval(std::move(current.start()), std::move(r.end()));
+            } else {
+                deoverlapped_intervals.emplace_back(std::move(current));
+                current = std::move(r);
+            }
+        }
+
+        deoverlapped_intervals.emplace_back(std::move(current));
+        return deoverlapped_intervals;
+    }
+
+private:
+    // These private functions optimize the case where a sequence supports the
+    // lower and upper bound operations more efficiently, as is the case with
+    // some boost containers.
+    struct std_ {};
+    struct built_in_ : std_ {};
+
+    template<typename Range, IntervalLessComparatorFor<clustering_key_prefix> LessComparator,
+             typename = decltype(std::declval<Range>().lower_bound(std::declval<clustering_key_prefix>(), std::declval<LessComparator>()))>
+    typename std::ranges::const_iterator_t<Range> do_lower_bound(const clustering_key_prefix& value, Range&& r, LessComparator&& cmp, built_in_) const {
+        return r.lower_bound(value, std::forward<LessComparator>(cmp));
+    }
+
+    template<typename Range, IntervalLessComparatorFor<clustering_key_prefix> LessComparator,
+             typename = decltype(std::declval<Range>().upper_bound(std::declval<clustering_key_prefix>(), std::declval<LessComparator>()))>
+    typename std::ranges::const_iterator_t<Range> do_upper_bound(const clustering_key_prefix& value, Range&& r, LessComparator&& cmp, built_in_) const {
+        return r.upper_bound(value, std::forward<LessComparator>(cmp));
+    }
+
+    template<typename Range, IntervalLessComparatorFor<clustering_key_prefix> LessComparator>
+    typename std::ranges::const_iterator_t<Range> do_lower_bound(const clustering_key_prefix& value, Range&& r, LessComparator&& cmp, std_) const {
+        return std::lower_bound(r.begin(), r.end(), value, std::forward<LessComparator>(cmp));
+    }
+
+    template<typename Range, IntervalLessComparatorFor<clustering_key_prefix> LessComparator>
+    typename std::ranges::const_iterator_t<Range> do_upper_bound(const clustering_key_prefix& value, Range&& r, LessComparator&& cmp, std_) const {
+        return std::upper_bound(r.begin(), r.end(), value, std::forward<LessComparator>(cmp));
+    }
+public:
+    // Return the lower bound of the specified sequence according to these bounds.
+    template<typename Range, IntervalLessComparatorFor<clustering_key_prefix> LessComparator>
+    typename std::ranges::const_iterator_t<Range> lower_bound(Range&& r, LessComparator&& cmp) const {
+        return start()
+            ? (start()->is_inclusive()
+                ? do_lower_bound(start()->value(), std::forward<Range>(r), std::forward<LessComparator>(cmp), built_in_())
+                : do_upper_bound(start()->value(), std::forward<Range>(r), std::forward<LessComparator>(cmp), built_in_()))
+            : std::ranges::begin(r);
+    }
+    // Return the upper bound of the specified sequence according to these bounds.
+    template<typename Range, IntervalLessComparatorFor<clustering_key_prefix> LessComparator>
+    typename std::ranges::const_iterator_t<Range> upper_bound(Range&& r, LessComparator&& cmp) const {
+        return end()
+             ? (end()->is_inclusive()
+                ? do_upper_bound(end()->value(), std::forward<Range>(r), std::forward<LessComparator>(cmp), built_in_())
+                : do_lower_bound(end()->value(), std::forward<Range>(r), std::forward<LessComparator>(cmp), built_in_()))
+             : (is_singular()
+                ? do_upper_bound(start()->value(), std::forward<Range>(r), std::forward<LessComparator>(cmp), built_in_())
+                : std::ranges::end(r));
+    }
+    // Returns a subset of the range that is within these bounds.
+    template<typename Range, IntervalLessComparatorFor<clustering_key_prefix> LessComparator>
+    std::ranges::subrange<std::ranges::const_iterator_t<Range>>
+    slice(Range&& range, LessComparator&& cmp) const {
+        return std::ranges::subrange(lower_bound(range, cmp), upper_bound(range, cmp));
+    }
+
+    // Returns the intersection between this interval and other.
+    std::optional<my_interval> intersection(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
+        auto p = std::minmax(_interval, other._interval, [&cmp] (auto&& a, auto&& b) {
+            return wrapping_interval<clustering_key_prefix>::less_than(a.start_bound(), b.start_bound(), cmp);
+        });
+        if (wrapping_interval<clustering_key_prefix>::greater_than_or_equal(p.first.end_bound(), p.second.start_bound(), cmp)) {
+            auto end = std::min(p.first.end_bound(), p.second.end_bound(), [&cmp] (auto&& a, auto&& b) {
+                return !wrapping_interval<clustering_key_prefix>::greater_than_or_equal(a, b, cmp);
+            });
+            return my_interval(p.second.start(), end.b);
+        }
+        return {};
+    }
+
+    static std::vector<my_interval> convert(std::vector<interval<clustering_key>> const & v)
+    {
+        std::vector<my_interval> ret;
+        for (auto & interval : v) { ret.push_back(my_interval(interval)); }
+        return ret;
+    }
+
+    friend class fmt::formatter<my_interval>;
+};
+
+using clustering_range = my_interval;
 // If `range` was supposed to be used with a comparator `cmp`, then
 // `reverse(range)` is supposed to be used with a reversed comparator `c`.
 // For instance, if it does make sense to do
@@ -103,6 +379,9 @@ public:
     specific_ranges(partition_key pk, clustering_row_ranges ranges)
             : _pk(std::move(pk)), _ranges(std::move(ranges)) {
     }
+    specific_ranges(partition_key pk, std::vector<interval<clustering_key_prefix>> ranges)
+            : _pk(std::move(pk)), _ranges(query::clustering_range::convert(ranges)) {
+    }
     specific_ranges(const specific_ranges&) = default;
 
     void add(const schema& s, partition_key pk, clustering_row_ranges ranges) {
@@ -127,17 +406,23 @@ public:
     const partition_key& pk() const {
         return _pk;
     }
-    const clustering_row_ranges& ranges() const {
+    const clustering_row_ranges & ranges_my_interval() const {
         return _ranges;
     }
-    clustering_row_ranges& ranges() {
-        return _ranges;
+    const std::vector<interval<clustering_key_prefix>> ranges() const { // TODO removed reference
+        std::vector<interval<clustering_key_prefix>> ret;
+        for (auto & r : _ranges)
+        {
+            ret.push_back(interval<clustering_key_prefix>(r));
+        }
+        return ret;
     }
+
 private:
     friend std::ostream& operator<<(std::ostream& out, const specific_ranges& r);
 
     partition_key _pk;
-    clustering_row_ranges _ranges;
+    ::query::clustering_row_ranges _ranges;
 };
 
 constexpr auto max_rows = std::numeric_limits<uint64_t>::max();
@@ -201,6 +486,12 @@ private:
     uint32_t _partition_row_limit_low_bits;
     uint32_t _partition_row_limit_high_bits;
 public:
+    partition_slice(std::vector<interval<clustering_key_prefix>> row_ranges, column_id_vector static_columns,
+        column_id_vector regular_columns, option_set options,
+        std::unique_ptr<specific_ranges> specific_ranges,
+        cql_serialization_format,
+        uint32_t partition_row_limit_low_bits,
+        uint32_t partition_row_limit_high_bits);
     partition_slice(clustering_row_ranges row_ranges, column_id_vector static_columns,
         column_id_vector regular_columns, option_set options,
         std::unique_ptr<specific_ranges> specific_ranges,
@@ -227,9 +518,19 @@ public:
     // FIXME: possibly make this function return a const ref instead.
     clustering_row_ranges get_all_ranges() const;
 
-    const clustering_row_ranges& default_row_ranges() const {
+    const std::vector<my_interval> & default_row_ranges_my_interval() const {
         return _row_ranges;
     }
+
+    const std::vector<interval<clustering_key_prefix>> default_row_ranges() const { // TODO removed ref
+        std::vector<interval<clustering_key_prefix>> ret;
+        for (auto & r : _row_ranges)
+        {
+            ret.push_back(interval<clustering_key_prefix>(r));
+        }
+        return ret;
+    }
+
     const std::unique_ptr<specific_ranges>& get_specific_ranges() const {
         return _specific_ranges;
     }
@@ -511,6 +812,17 @@ struct mapreduce_result {
 std::ostream& operator<<(std::ostream& out, const query::mapreduce_result::printer&);
 }
 
+template<> struct fmt::formatter<query::my_interval> : fmt::formatter<string_view> {
+    auto format(const query::my_interval& r, fmt::format_context& ctx) const {
+        return fmt::format_to(ctx.out(), "{}", r._interval);
+    }
+};
+
+template<typename U>
+std::ostream& operator<<(std::ostream& out, const query::my_interval& r) {
+    fmt::print(out, "{}", r);
+    return out;
+}
 
 template <> struct fmt::formatter<query::specific_ranges> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<query::partition_slice> : fmt::ostream_formatter {};

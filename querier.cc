@@ -89,7 +89,7 @@ static bool clustering_position_matches(const schema& s, const query::partition_
     if (pos.position.region() != partition_region::clustered) {
         // We stopped at a non-clustering position so the partition's clustering
         // row ranges should be the default row ranges.
-        return &row_ranges == &slice.default_row_ranges();
+        return &row_ranges == &slice.default_row_ranges_my_interval();
     }
 
     clustering_key_prefix::equality eq(s);

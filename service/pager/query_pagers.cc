@@ -158,7 +158,7 @@ future<result<service::storage_proxy::coordinator_query_result>> query_pager::do
         modify_ranges(_ranges, lo, has_ck, dht::ring_position_comparator(*_query_schema));
 
         if (has_ck) {
-            query::clustering_row_ranges row_ranges = _cmd->slice.default_row_ranges();
+            query::clustering_row_ranges row_ranges = _cmd->slice.default_row_ranges_my_interval();
             position_in_partition next_pos = _last_pos;
             if (_last_pos.has_key()) {
                 next_pos = position_in_partition::after_key(*_query_schema, _last_pos);
@@ -458,7 +458,7 @@ bool service::pager::query_pagers::may_need_paging(const schema& s, uint32_t pag
                 || (ranges.size() == 1 && query::is_single_partition(ranges.front()))) {
             auto effective_partition_row_limit = cmd.slice.options.contains<query::partition_slice::option::distinct>() ? 1 : cmd.slice.partition_row_limit();
 
-            auto& cr_ranges = cmd.slice.default_row_ranges();
+            auto& cr_ranges = cmd.slice.default_row_ranges_my_interval();
             if (effective_partition_row_limit <= 1 || cr_ranges.empty()
                     || (cr_ranges.size() == 1 && query::is_single_row(s, cr_ranges.front()))) {
                 return false;

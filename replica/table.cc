@@ -3829,7 +3829,7 @@ future<row_locker::lock_holder> table::do_push_view_replica_updates(shared_ptr<d
     // Take the shard-local lock on the base-table row or partition as needed.
     // We'll return this lock to the caller, which will release it after
     // writing the base-table update.
-    future<row_locker::lock_holder> lockf = local_base_lock(base, m.decorated_key(), slice.default_row_ranges(), timeout);
+    future<row_locker::lock_holder> lockf = local_base_lock(base, m.decorated_key(), slice.default_row_ranges_my_interval(), timeout);
     co_await utils::get_local_injector().inject("table_push_view_replica_updates_timeout", timeout);
     auto lock = co_await std::move(lockf);
     auto pk = dht::partition_range::make_singular(m.decorated_key());

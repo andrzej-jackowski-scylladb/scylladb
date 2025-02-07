@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include "query-request.hh"
 #include "utils/assert.hh"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/algorithm/string/split.hpp>
@@ -957,9 +958,9 @@ static test_result select_missing_row(replica::column_family& cf, clustered_ds& 
 static test_result test_slicing_using_restrictions(replica::column_family& cf, clustered_ds& ds, int_range row_range) {
     tests::reader_concurrency_semaphore_wrapper semaphore;
     auto slice = partition_slice_builder(*cf.schema())
-        .with_range(std::move(row_range).transform([&] (int i) -> clustering_key {
+        .with_range(query::my_interval(std::move(row_range).transform([&] (int i) -> clustering_key {
             return ds.make_ck(*cf.schema(), i);
-        }))
+        })))
         .build();
     auto pr = dht::partition_range::make_singular(make_pkey(*cf.schema(), 0));
     auto rd = cf.make_reader_v2(cf.schema(), semaphore.make_permit(), pr, slice, nullptr,

@@ -10,6 +10,7 @@
 
 #include <boost/test/unit_test.hpp>
 #include <seastar/net/inet_address.hh>
+#include "query-request.hh"
 #include "sstables/generation_type.hh"
 #include "test/lib/scylla_test_case.hh"
 #include <seastar/testing/thread_test_case.hh>
@@ -61,7 +62,7 @@ void test_no_clustered(sstables::test_env& env, bytes&& key, std::unordered_map<
     auto mutation = read_mutation_from_mutation_reader(rd).get();
     BOOST_REQUIRE(mutation);
     auto& mp = mutation->partition();
-    for (auto&& e : mp.range(*s, interval<clustering_key_prefix>())) {
+    for (auto&& e : mp.range(*s, query::my_interval())) {
         BOOST_REQUIRE(to_bytes(e.key()) == to_bytes(""));
         BOOST_REQUIRE(e.row().cells().size() == map.size());
 
@@ -71,6 +72,7 @@ void test_no_clustered(sstables::test_env& env, bytes&& key, std::unordered_map<
         }
     }
 }
+
 
 SEASTAR_TEST_CASE(uncompressed_1) {
   return test_env::do_with_async([] (test_env& env) {

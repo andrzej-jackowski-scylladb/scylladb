@@ -325,8 +325,8 @@ read_partitions_with_generic_paged_scan(distributed<replica::database>& db, sche
             }
         }
 
-        if (res_builder.last_ckey()) {
-            auto ckranges = cmd.slice.default_row_ranges();
+       if (res_builder.last_ckey()) {
+            auto ckranges = cmd.slice.default_row_ranges_my_interval();
             query::trim_clustering_row_ranges_to(*s, ckranges, *res_builder.last_ckey());
             cmd.slice.clear_range(*s, res_builder.last_pkey().key());
             cmd.slice.clear_ranges();
@@ -982,7 +982,7 @@ slice_partitions(const schema& schema, const std::vector<mutation>& partitions,
     auto it = sb ? partitions.cbegin() + sb->value() + !sb->is_inclusive() : partitions.cbegin();
     const auto end = eb ? partitions.cbegin() + eb->value() + eb->is_inclusive() : partitions.cend();
 
-    const auto& row_ranges = slice.default_row_ranges();
+    const auto& row_ranges = slice.default_row_ranges_my_interval();
 
     std::vector<mutation> sliced_partitions;
     for (;it != end; ++it) {

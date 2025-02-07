@@ -90,7 +90,7 @@ class built_indexes_virtual_reader {
             if (specific_ranges) {
                 partition_key pk = specific_ranges->pk();
                 std::vector<query::clustering_range> ranges;
-                for (const query::clustering_range &range : specific_ranges->ranges()) {
+                for (const query::clustering_range &range : specific_ranges->ranges_my_interval()) {
                     ranges.push_back(index_name_range_to_view_name_range(range, built_views_schema, built_indexes_schema));
                 }
                 ret.clear_ranges();

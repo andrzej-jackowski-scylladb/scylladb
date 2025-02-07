@@ -231,6 +231,24 @@ interval<std::remove_cvref_t<T>> to_range(oper_t op, T&& val) {
     }
 }
 
+query::my_interval to_range_my_interval(oper_t op, clustering_key_prefix&& val) {
+    static constexpr bool inclusive = true, exclusive = false;
+    switch (op) {
+    case oper_t::EQ:
+        return query::my_interval::make_singular(std::forward<clustering_key_prefix>(val));
+    case oper_t::GT:
+        return query::my_interval::make_starting_with(interval_bound(std::forward<clustering_key_prefix>(val), exclusive));
+    case oper_t::GTE:
+        return query::my_interval::make_starting_with(interval_bound(std::forward<clustering_key_prefix>(val), inclusive));
+    case oper_t::LT:
+        return query::my_interval::make_ending_with(interval_bound(std::forward<clustering_key_prefix>(val), exclusive));
+    case oper_t::LTE:
+        return query::my_interval::make_ending_with(interval_bound(std::forward<clustering_key_prefix>(val), inclusive));
+    default:
+        throw std::logic_error(format("to_range: unknown comparison operator {}", op));
+    }
+}
+
 interval<clustering_key_prefix> to_range(oper_t op, const clustering_key_prefix& val) {
     return to_range<const clustering_key_prefix&>(op, val);
 }
@@ -2085,10 +2103,12 @@ std::optional<query::clustering_range> intersection(
     // start. Note that to avoid infinite recursion (#18688) the function
     // starts_before_start() must never return true for both (r1,r2) and
     // (r2,r1) - in other words, it must be a *strict* partial order.
+    rlogger.info("In interscetion r1={}, r2={}", r1, r2);
     if (starts_before_start(r2, r1, cmp)) {
         return intersection(r2, r1, cmp);
     }
     if (!starts_before_or_at_end(r2, r1, cmp)) {
+        rlogger.info("returning empty");
         return {};
     }
     const auto& intersection_start = r2.start();
@@ -2135,7 +2155,7 @@ struct multi_column_range_accumulator {
                         opt_values[i],
                         "Invalid null value in condition for column {}", col.col->name_as_text());
             }
-            intersect_all(to_range(binop.op, clustering_key_prefix(std::move(values))));
+            intersect_all(to_range_my_interval(binop.op, clustering_key_prefix(std::move(values))));
         } else if (binop.op == oper_t::IN) {
             const cql3::raw_value tup = expr::evaluate(binop.rhs, options);
             utils::chunked_vector<std::vector<managed_bytes_opt>> tuple_elems;
@@ -2249,7 +2269,7 @@ struct multi_column_range_accumulator {
         std::set<query::clustering_range, range_less> new_ranges(range_less{*schema});
         for (const auto& current_tuple : in_values) {
             // Each IN value is like a separate EQ restriction ANDed to the existing state.
-            auto current_range = to_range(
+            auto current_range = to_range_my_interval(
                     oper_t::EQ, clustering_key_prefix::from_optional_exploded(*schema, current_tuple));
             for (const auto& r : ranges) {
                 auto intrs = intersection(r, current_range, prefix3cmp);
@@ -2305,9 +2325,12 @@ std::vector<query::clustering_range> get_single_column_clustering_bounds(
             std::vector<query::clustering_range> ck_ranges;
             if (prior_column_values.empty()) {
                 // This is the first and last range; just turn it into a clustering_key_prefix.
+                
                 ck_ranges.push_back(
                         reverse_if_reqd(
-                                last_range->transform([] (const managed_bytes& val) { return clustering_key_prefix::from_range(std::array<managed_bytes, 1>{val}); }),
+                                query::my_interval(last_range->transform([] (const managed_bytes& val) {
+                                    return clustering_key_prefix::from_range(std::array<managed_bytes, 1>{val}); 
+                                })),
                                 *schema.clustering_column_at(i).type));
             } else {
                 // Prior clustering columns are equality-restricted (either via = or IN), producing one or more

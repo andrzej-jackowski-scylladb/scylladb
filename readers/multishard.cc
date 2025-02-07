@@ -348,7 +348,7 @@ void evictable_reader_v2::update_next_position() {
 void evictable_reader_v2::adjust_partition_slice() {
     _slice_override = _ps;
 
-    auto ranges = _slice_override->default_row_ranges();
+    auto ranges = _slice_override->default_row_ranges_my_interval();
     query::trim_clustering_row_ranges_to(*_schema, ranges, _next_position_in_partition);
 
     _slice_override->clear_ranges();

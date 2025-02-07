@@ -147,7 +147,10 @@ static void reverse_clustering_ranges_bounds(clustering_row_ranges& ranges) {
 partition_slice legacy_reverse_slice_to_native_reverse_slice(const schema& schema, partition_slice slice) {
     return partition_slice_builder(schema, std::move(slice))
         .mutate_ranges([] (clustering_row_ranges& ranges) { reverse_clustering_ranges_bounds(ranges); })
-        .mutate_specific_ranges([] (specific_ranges& ranges) { reverse_clustering_ranges_bounds(ranges.ranges()); })
+        .mutate_specific_ranges([] (specific_ranges& ranges) {
+            auto clustering_ranges = query::my_interval::convert(ranges.ranges()); // TODO: additional copy
+            reverse_clustering_ranges_bounds(clustering_ranges); 
+        })
         .build();
 }
 
@@ -163,12 +166,31 @@ partition_slice reverse_slice(const schema& schema, partition_slice slice) {
             reverse_clustering_ranges_bounds(ranges);
         })
         .mutate_specific_ranges([] (specific_ranges& sranges) {
-            auto& ranges = sranges.ranges();
+            auto ranges = query::my_interval::convert(sranges.ranges()); // TODO: additional copy
             std::reverse(ranges.begin(), ranges.end());
             reverse_clustering_ranges_bounds(ranges);
         })
         .with_option_toggled<partition_slice::option::reversed>()
         .build();
+}
+
+partition_slice::partition_slice(std::vector<interval<clustering_key_prefix>> row_ranges,
+    query::column_id_vector static_columns,
+    query::column_id_vector regular_columns,
+    option_set options,
+    std::unique_ptr<specific_ranges> specific_ranges,
+    cql_serialization_format cql_format,
+    uint32_t partition_row_limit_low_bits,
+    uint32_t partition_row_limit_high_bits)
+    : _row_ranges(query::my_interval::convert(row_ranges))
+    , static_columns(std::move(static_columns))
+    , regular_columns(std::move(regular_columns))
+    , options(options)
+    , _specific_ranges(std::move(specific_ranges))
+    , _partition_row_limit_low_bits(partition_row_limit_low_bits)
+    , _partition_row_limit_high_bits(partition_row_limit_high_bits)
+{
+    cql_format.ensure_supported();
 }
 
 partition_slice::partition_slice(clustering_row_ranges row_ranges,
@@ -263,7 +285,7 @@ clustering_row_ranges partition_slice::get_all_ranges() const {
     if (specific_ranges) {
         all_ranges.insert(all_ranges.end(), specific_ranges->ranges().begin(), specific_ranges->ranges().end());
     }
-    return all_ranges;
+    return query::my_interval::convert(all_ranges);
 }
 
 sstring

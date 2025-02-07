@@ -7,6 +7,7 @@
  */
 
 #include <boost/range/irange.hpp>
+#include "query-request.hh"
 #include "seastarx.hh"
 #include "test/lib/simple_schema.hh"
 #include "test/lib/log.hh"
@@ -171,7 +172,7 @@ struct table {
     std::unique_ptr<reader> make_single_key_reader(int pk, int_range ck_range) {
         ++reads_started;
         auto slice = partition_slice_builder(*s.schema())
-            .with_range(ck_range.transform([this] (int key) { return c_keys[key]; }))
+            .with_range(query::my_interval(ck_range.transform([this] (int key) { return c_keys[key]; })))
             .build();
         auto pr = dht::partition_range::make_singular(p_keys[pk]);
         return make_reader(std::move(pr), std::move(slice));
