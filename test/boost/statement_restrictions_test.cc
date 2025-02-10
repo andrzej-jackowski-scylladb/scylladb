@@ -7,6 +7,7 @@
  */
 
 
+#include <compare>
 #undef SEASTAR_TESTING_MAIN
 #include <seastar/testing/test_case.hh>
 
@@ -654,21 +655,28 @@ std::optional<query::clustering_range> intersection(
     return query::clustering_range(intersection_start, intersection_end);
 }
 
-/* TODO
 SEASTAR_TEST_CASE(clustering_range_intersection) {
     return do_with_cql_env_thread([](cql_test_env& env) {
         cquery_nofail(env, "CREATE TABLE ks.t(id int, ck1 int, ck2 int, ck3 int, r int, PRIMARY KEY (id, ck1, ck2, ck3))");
         auto schema = env.local_db().find_schema("ks", "t");
         const clustering_key_prefix::prefix_equal_tri_compare prefix3cmp = get_unreversed_tri_compare(*schema);
-        auto rAstart = left_closed({I(1), I(1)});
-        auto rBend = right_open({I(1), I(1), I(1)});
-        interval interv = intersection(rAstart, rBend, prefix3cmp).value();
+        query::my_interval rAstart = left_closed({I(1), I(1), I(1)});
+        query::my_interval rBend = right_closed({I(1), I(1)});
+        query::my_interval interv = intersection(rAstart, rBend, prefix3cmp).value();
+        query::my_interval interv2 = intersection(rBend, rAstart, prefix3cmp).value();
+        BOOST_CHECK_EQUAL(interv, interv2);
 
-        interval<clustering_key_prefix> empty;
+        // Below is incorrect, because start > end
+        BOOST_CHECK(clustering_key_prefix::tri_compare(*schema)(interv.start()->value(), interv.end()->value()) == std::strong_ordering::greater);
+        BOOST_CHECK(clustering_key_prefix::tri_compare(*schema)(interv.end()->value(), interv.start()->value()) == std::strong_ordering::less);
+        BOOST_CHECK(clustering_key_prefix::tri_compare(*schema)(interv2.start()->value(), interv2.end()->value()) == std::strong_ordering::greater);
+        BOOST_CHECK(clustering_key_prefix::tri_compare(*schema)(interv2.end()->value(), interv2.start()->value()) == std::strong_ordering::less);
 
-        BOOST_CHECK_EQUAL(interv, empty);
+        auto interv3 = left_open({I(1), I(1), I(1)}).intersection(right_closed({I(1), I(1)}), clustering_key_prefix::prefix_equal_tri_compare{*schema});
+        // Below is incorrect, because [(1,1,1), (1,1)) is non-empty, e.g. (1,1,2) is in the range.
+        BOOST_CHECK_EQUAL(interv3, std::optional<query::my_interval>{});
+
     });
 }
-*/
 
 BOOST_AUTO_TEST_SUITE_END()
