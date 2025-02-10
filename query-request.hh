@@ -59,9 +59,6 @@ class my_interval {
     using optional = std::optional<U>;
 public:
     using bound = interval_bound<clustering_key_prefix>;
-
-    template <typename Transformer>
-    using transformed_type = typename wrapping_interval<clustering_key_prefix>::template transformed_type<Transformer>;
 private:
     wrapping_interval<clustering_key_prefix> _interval;
 public:
@@ -86,39 +83,18 @@ public:
         : _interval(std::move(r))
     { }
 
-    operator wrapping_interval<clustering_key_prefix>() const & {
-        return _interval;
-    }
-    operator wrapping_interval<clustering_key_prefix>() && {
-        return std::move(_interval);
-    }
-
     // the point is before the interval.
     // Comparator must define a total ordering on T.
     bool before(const clustering_key_prefix& point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
         return _interval.before(point, std::forward<decltype(cmp)>(cmp));
     }
-    // the other interval is before this interval.
-    // Comparator must define a total ordering on T.
-    bool other_is_before(const clustering_key_prefix& o, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
-        return _interval.other_is_before(o, std::forward<decltype(cmp)>(cmp));
-    }
+
     // the point is after the interval.
     // Comparator must define a total ordering on T.
     bool after(const clustering_key_prefix& point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
         return _interval.after(point, std::forward<decltype(cmp)>(cmp));
     }
-    // check if two intervals overlap.
-    // Comparator must define a total ordering on T.
-    bool overlaps(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
-        // if both this and other have an open start, the two intervals will overlap.
-        if (!start() && !other.start()) {
-            return true;
-        }
 
-        return wrapping_interval<clustering_key_prefix>::greater_than_or_equal(_interval.end_bound(), other._interval.start_bound(), cmp)
-            && wrapping_interval<clustering_key_prefix>::greater_than_or_equal(other._interval.end_bound(), _interval.start_bound(), cmp);
-    }
     static my_interval make(bound start, bound end) {
         return my_interval({std::move(start)}, {std::move(end)});
     }
@@ -146,61 +122,6 @@ public:
     const optional<bound>& end() const {
         return _interval.end();
     }
-    // the point is inside the interval
-    // Comparator must define a total ordering on T.
-    bool contains(const int& point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
-        return !before(point, cmp) && !after(point, cmp);
-    }
-    // Returns true iff all values contained by other are also contained by this.
-    // Comparator must define a total ordering on T.
-    bool contains(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
-        return wrapping_interval<clustering_key_prefix>::less_than_or_equal(_interval.start_bound(), other._interval.start_bound(), cmp)
-                && wrapping_interval<clustering_key_prefix>::greater_than_or_equal(_interval.end_bound(), other._interval.end_bound(), cmp);
-    }
-    // Returns intervals which cover all values covered by this interval but not covered by the other interval.
-    // Ranges are not overlapping and ordered.
-    // Comparator must define a total ordering on T.
-    std::vector<my_interval> subtract(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
-        auto subtracted = _interval.subtract(other._interval, std::forward<decltype(cmp)>(cmp));
-        return subtracted | std::views::transform([](auto&& r) {
-            return my_interval(std::move(r));
-        }) | std::ranges::to<std::vector>();
-    }
-    // split interval in two around a split_point. split_point has to be inside the interval
-    // split_point will belong to first interval
-    // Comparator must define a total ordering on T.
-    std::pair<my_interval, my_interval> split(const clustering_key_prefix& split_point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
-        SCYLLA_ASSERT(contains(split_point, std::forward<decltype(cmp)>(cmp)));
-        my_interval left(start(), bound(split_point));
-        my_interval right(bound(split_point, false), end());
-        return std::make_pair(std::move(left), std::move(right));
-    }
-    // Create a sub-interval including values greater than the split_point. If split_point is after
-    // the end, returns std::nullopt.
-    std::optional<my_interval> split_after(const clustering_key_prefix& split_point, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
-        if (end() && cmp(split_point, end()->value()) >= 0) {
-            return std::nullopt;
-        } else if (start() && cmp(split_point, start()->value()) < 0) {
-            return *this;
-        } else {
-            return my_interval(interval_bound<clustering_key_prefix>(split_point, false), end());
-        }
-    }
-    // Creates a new sub-interval which is the intersection of this interval and an interval starting with "start".
-    // If there is no overlap, returns std::nullopt.
-    std::optional<my_interval> trim_front(std::optional<bound>&& start, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
-        return intersection(interval(std::move(start), {}), cmp);
-    }
-    // Transforms this interval into a new interval of a different value type
-    // Supplied transformer should transform value of type T (the old type) into value of type U (the new type).
-    template<typename Transformer, typename U = transformed_type<Transformer>>
-    interval<U> transform(Transformer&& transformer) && {
-        return interval<U>(std::move(_interval).transform(std::forward<Transformer>(transformer)));
-    }
-    template<typename Transformer, typename U = transformed_type<Transformer>>
-    interval<U> transform(Transformer&& transformer) const & {
-        return interval<U>(_interval.transform(std::forward<Transformer>(transformer)));
-    }
 
     bool equal(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
         return _interval.equal(other._interval, std::forward<decltype(cmp)>(cmp));
@@ -208,6 +129,7 @@ public:
     bool operator==(const my_interval& other) const {
         return _interval == other._interval;
     }
+
     // Takes a vector of possibly overlapping intervals and returns a vector containing
     // a set of non-overlapping intervals covering the same values.
     template<IntervalComparatorFor<clustering_key_prefix> Comparator, typename IntervalVec>
@@ -278,7 +200,7 @@ private:
     typename std::ranges::const_iterator_t<Range> do_upper_bound(const clustering_key_prefix& value, Range&& r, LessComparator&& cmp, std_) const {
         return std::upper_bound(r.begin(), r.end(), value, std::forward<LessComparator>(cmp));
     }
-public:
+
     // Return the lower bound of the specified sequence according to these bounds.
     template<typename Range, IntervalLessComparatorFor<clustering_key_prefix> LessComparator>
     typename std::ranges::const_iterator_t<Range> lower_bound(Range&& r, LessComparator&& cmp) const {
@@ -299,25 +221,12 @@ public:
                 ? do_upper_bound(start()->value(), std::forward<Range>(r), std::forward<LessComparator>(cmp), built_in_())
                 : std::ranges::end(r));
     }
+public:
     // Returns a subset of the range that is within these bounds.
     template<typename Range, IntervalLessComparatorFor<clustering_key_prefix> LessComparator>
     std::ranges::subrange<std::ranges::const_iterator_t<Range>>
     slice(Range&& range, LessComparator&& cmp) const {
         return std::ranges::subrange(lower_bound(range, cmp), upper_bound(range, cmp));
-    }
-
-    // Returns the intersection between this interval and other.
-    std::optional<my_interval> intersection(const my_interval& other, IntervalComparatorFor<clustering_key_prefix> auto&& cmp) const {
-        auto p = std::minmax(_interval, other._interval, [&cmp] (auto&& a, auto&& b) {
-            return wrapping_interval<clustering_key_prefix>::less_than(a.start_bound(), b.start_bound(), cmp);
-        });
-        if (wrapping_interval<clustering_key_prefix>::greater_than_or_equal(p.first.end_bound(), p.second.start_bound(), cmp)) {
-            auto end = std::min(p.first.end_bound(), p.second.end_bound(), [&cmp] (auto&& a, auto&& b) {
-                return !wrapping_interval<clustering_key_prefix>::greater_than_or_equal(a, b, cmp);
-            });
-            return my_interval(p.second.start(), end.b);
-        }
-        return {};
     }
 
     static std::vector<my_interval> convert(std::vector<interval<clustering_key>> const & v)
@@ -413,7 +322,7 @@ public:
         std::vector<interval<clustering_key_prefix>> ret;
         for (auto & r : _ranges)
         {
-            ret.push_back(interval<clustering_key_prefix>(r));
+            ret.push_back(interval<clustering_key_prefix>(r.start(), r.end()));
         }
         return ret;
     }
@@ -526,7 +435,7 @@ public:
         std::vector<interval<clustering_key_prefix>> ret;
         for (auto & r : _row_ranges)
         {
-            ret.push_back(interval<clustering_key_prefix>(r));
+            ret.push_back(interval<clustering_key_prefix>(r.start(), r.end()));
         }
         return ret;
     }
