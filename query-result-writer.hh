@@ -160,7 +160,7 @@ public:
         // fetch the row range for this partition already.
         auto& ranges = _slice.row_ranges(s, key);
         auto after_key = [this, pw = _w.add(), &key] () mutable {
-            if (_slice.options.contains<partition_slice::option::send_partition_key>()) {
+            if (_slice.options.contains<partition_slice_old::option::send_partition_key>()) {
                 return std::move(pw).write_key(key);
             } else {
                 return std::move(pw).skip_key();
@@ -169,7 +169,7 @@ public:
         if (_request != result_request::only_result) {
             _digest.feed_hash(key, s);
         }
-        return partition_writer(_request, _slice, ranges, _w, std::move(pos), std::move(after_key), _digest, _row_count,
+        return partition_writer(_request, _slice, to_clustering_ranges(ranges, s), _w, std::move(pos), std::move(after_key), _digest, _row_count,
                                 _partition_count, _last_modified);
     }
 

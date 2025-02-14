@@ -1,0 +1,5 @@
+type: Topology
+pool_size: 10
+extra_scylla_config_options:
+    authenticator: AllowAllAuthenticator
+    authorizer: AllowAllAuthorizer

@@ -1,0 +1,65 @@
+diff --git a/configure.py b/configure.py
+index 4610030970..b34f3dd8f6 100755
+--- a/configure.py
++++ b/configure.py
+@@ -2196,8 +2196,8 @@ def write_build_file(f,
+             command = clang --target=wasm32 --no-standard-libraries -Wl,--export-all -Wl,--no-entry $in -o $out
+             description = C2WASM $out
+         rule rust2wasm
+-            command = cargo build --target=wasm32-wasi --example=$example --locked --manifest-path=test/resource/wasm/rust/Cargo.toml --target-dir=$builddir/wasm/ $
+-                && wasm-opt -Oz $builddir/wasm/wasm32-wasi/debug/examples/$example.wasm -o $builddir/wasm/$example.wasm $
++            command = cargo build --target=wasm32-wasip1 --example=$example --locked --manifest-path=test/resource/wasm/rust/Cargo.toml --target-dir=$builddir/wasm/ $
++                && wasm-opt -Oz $builddir/wasm/wasm32-wasip1/debug/examples/$example.wasm -o $builddir/wasm/$example.wasm $
+                 && wasm-strip $builddir/wasm/$example.wasm
+             description = RUST2WASM $out
+         rule wasm2wat
+diff --git a/docs/cql/wasm.rst b/docs/cql/wasm.rst
+index de827ed574..967a3ab519 100644
+--- a/docs/cql/wasm.rst
++++ b/docs/cql/wasm.rst
+@@ -37,8 +37,8 @@ The compilation instructions are described at https://github.com/scylladb/scylla
+ 
+ .. code-block:: bash
+ 
+-    cargo build --target=wasm32-wasi
+-    wasm2wat target/wasm32-wasi/debug/flatten.wasm > flatten.wat
++    cargo build --target=wasm32-wasip1
++    wasm2wat target/wasm32-wasip1/debug/flatten.wasm > flatten.wat
+ 
+ 
+ C
+@@ -103,7 +103,7 @@ And compile it with:
+ 
+ .. code-block:: bash
+ 
+-    /path/to/wasm/supporting/c/compiler --sysroot=/path/to/wasi/sysroot -O2  --target=wasm32-wasi -Wl,--export=fib -Wl,--export=_scylla_abi -Wl,--export=_scylla_malloc -Wl,--export=_scylla_free -Wl,--no-entry fibnull.c -o fibnull.wasm
++    /path/to/wasm/supporting/c/compiler --sysroot=/path/to/wasi/sysroot -O2  --target=wasm32-wasip1 -Wl,--export=fib -Wl,--export=_scylla_abi -Wl,--export=_scylla_malloc -Wl,--export=_scylla_free -Wl,--no-entry fibnull.c -o fibnull.wasm
+     wasm2wat fibnull.wasm > fibnull.wat
+ 
+ The example above is particularly complicated, because it handles NULL values, which causes even integers to be serialized. Because the UDF only takes Wasm-compatible types (ints/doubles) as parameters and return values, 
+diff --git a/install-dependencies.sh b/install-dependencies.sh
+index e19e38a799..838d655db3 100755
+--- a/install-dependencies.sh
++++ b/install-dependencies.sh
+@@ -112,7 +112,7 @@ fedora_packages=(
+     rust
+     cargo
+     rapidxml-devel
+-    rust-std-static-wasm32-wasi
++    rust-std-static-wasm32-wasip1
+     wabt
+     binaryen
+     lcov
+diff --git a/test/resource/wasm/rust/CMakeLists.txt b/test/resource/wasm/rust/CMakeLists.txt
+index abcabd6b13..de3419f0e0 100644
+--- a/test/resource/wasm/rust/CMakeLists.txt
++++ b/test/resource/wasm/rust/CMakeLists.txt
+@@ -8,7 +8,7 @@ function(compile_rust_to_wasm input)
+   set(input "${CMAKE_CURRENT_SOURCE_DIR}/${input}")
+   set(output_dir "${parsed_args_OUT_DIR}")
+   set(output "${output_dir}/${basename}.wasm")
+-  set(target "wasm32-wasi")
++  set(target "wasm32-wasip1")
+   set(mode "debug")
+   set(package "examples")
+   add_custom_command(

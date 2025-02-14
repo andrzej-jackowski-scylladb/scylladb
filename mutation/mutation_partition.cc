@@ -13,6 +13,7 @@
 #include "mutation_partition.hh"
 #include "clustering_interval_set.hh"
 #include "converting_mutation_partition_applier.hh"
+#include "mutation/position_in_partition.hh"
 #include "partition_builder.hh"
 #include "query-result-writer.hh"
 #include "mutation_fragment.hh"
@@ -2059,7 +2060,7 @@ void reconcilable_result_builder::consume_new_partition(const dht::decorated_key
     _rt_assembler.reset();
     _return_static_content_on_partition_with_no_rows =
         _slice.options.contains(query::partition_slice::option::always_return_static_content) ||
-        !has_ck_selector(_slice.row_ranges(*_query_schema, dk.key()));
+        !has_ck_selector(query::to_clustering_ranges(_slice.row_ranges(*_query_schema, dk.key()), *_query_schema));
     _static_row_is_alive = false;
     _live_rows = 0;
     _mutation_consumer.emplace(streamed_mutation_freezer(*_query_schema, dk.key()));

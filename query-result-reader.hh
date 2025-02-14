@@ -152,7 +152,7 @@ public:
         for (auto&& p : _v.partitions()) {
             auto rows = p.rows();
             auto row_count = rows.size();
-            if (slice.options.contains<partition_slice::option::send_partition_key>()) {
+            if (slice.options.contains<partition_slice_old::option::send_partition_key>()) {
                 auto key = *p.key();
                 visitor.accept_new_partition(key, row_count);
             } else {
@@ -163,7 +163,7 @@ public:
 
             for (auto&& row : rows) {
                 result_row_view view(row.cells());
-                if (slice.options.contains<partition_slice::option::send_clustering_key>()) {
+                if (slice.options.contains<partition_slice_old::option::send_clustering_key>()) {
                     visitor.accept_new_row(*row.key(), static_row, view);
                 } else {
                     visitor.accept_new_row(static_row, view);

@@ -98,12 +98,12 @@ void trim_clustering_row_ranges_to(const schema& s, clustering_row_ranges& range
 /// Works both with forward schema and ranges, and reversed schema and native reversed ranges
 void trim_clustering_row_ranges_to(const schema& s, clustering_row_ranges& ranges, const clustering_key& key);
 
-class specific_ranges {
+class specific_ranges_old {
 public:
-    specific_ranges(partition_key pk, clustering_row_ranges ranges)
+    specific_ranges_old(partition_key pk, clustering_row_ranges ranges)
             : _pk(std::move(pk)), _ranges(std::move(ranges)) {
     }
-    specific_ranges(const specific_ranges&) = default;
+    specific_ranges_old(const specific_ranges_old&) = default;
 
     void add(const schema& s, partition_key pk, clustering_row_ranges ranges) {
         if (!_pk.equal(s, pk)) {
@@ -134,7 +134,8 @@ public:
         return _ranges;
     }
 private:
-    friend std::ostream& operator<<(std::ostream& out, const specific_ranges& r);
+    friend std::ostream& operator<<(std::ostream& out, const specific_ranges_old& r);
+    friend class specific_ranges;
 
     partition_key _pk;
     clustering_row_ranges _ranges;
@@ -144,79 +145,84 @@ constexpr auto max_rows = std::numeric_limits<uint64_t>::max();
 constexpr auto partition_max_rows = std::numeric_limits<uint64_t>::max();
 constexpr auto max_rows_if_set = std::numeric_limits<uint32_t>::max();
 
+class parition_slice_options 
+{
+public:
+enum class option {
+    send_clustering_key,
+    send_partition_key,
+    send_timestamp,
+    send_expiry,
+    reversed,
+    distinct,
+    collections_as_maps,
+    send_ttl,
+    allow_short_read,
+    with_digest,
+    bypass_cache,
+    // Normally, we don't return static row if the request has clustering
+    // key restrictions and the partition doesn't have any rows matching
+    // the restrictions, see #589. This flag overrides this behavior.
+    always_return_static_content,
+    // Use the new data range scan variant, which builds query::result
+    // directly, bypassing the intermediate reconcilable_result format used
+    // in pre 4.5 range scans.
+    range_scan_data_variant,
+    // When set, mutation query can end a page even if there is no live row in the
+    // final reconcilable_result. This prevents exchanging large pages when there
+    // is a lot of dead rows. This flag is needed during rolling upgrades to support
+    // old coordinators which do not tolerate pages with no live rows.
+    allow_mutation_read_page_without_live_row,
+};
+using option_set = enum_set<super_enum<option,
+    option::send_clustering_key,
+    option::send_partition_key,
+    option::send_timestamp,
+    option::send_expiry,
+    option::reversed,
+    option::distinct,
+    option::collections_as_maps,
+    option::send_ttl,
+    option::allow_short_read,
+    option::with_digest,
+    option::bypass_cache,
+    option::always_return_static_content,
+    option::range_scan_data_variant,
+    option::allow_mutation_read_page_without_live_row>>;
+};
+
 // Specifies subset of rows, columns and cell attributes to be returned in a query.
 // Can be accessed across cores.
 // Schema-dependent.
-class partition_slice {
+class partition_slice_old : public parition_slice_options{
     friend class ::partition_slice_builder;
 public:
-    enum class option {
-        send_clustering_key,
-        send_partition_key,
-        send_timestamp,
-        send_expiry,
-        reversed,
-        distinct,
-        collections_as_maps,
-        send_ttl,
-        allow_short_read,
-        with_digest,
-        bypass_cache,
-        // Normally, we don't return static row if the request has clustering
-        // key restrictions and the partition doesn't have any rows matching
-        // the restrictions, see #589. This flag overrides this behavior.
-        always_return_static_content,
-        // Use the new data range scan variant, which builds query::result
-        // directly, bypassing the intermediate reconcilable_result format used
-        // in pre 4.5 range scans.
-        range_scan_data_variant,
-        // When set, mutation query can end a page even if there is no live row in the
-        // final reconcilable_result. This prevents exchanging large pages when there
-        // is a lot of dead rows. This flag is needed during rolling upgrades to support
-        // old coordinators which do not tolerate pages with no live rows.
-        allow_mutation_read_page_without_live_row,
-    };
-    using option_set = enum_set<super_enum<option,
-        option::send_clustering_key,
-        option::send_partition_key,
-        option::send_timestamp,
-        option::send_expiry,
-        option::reversed,
-        option::distinct,
-        option::collections_as_maps,
-        option::send_ttl,
-        option::allow_short_read,
-        option::with_digest,
-        option::bypass_cache,
-        option::always_return_static_content,
-        option::range_scan_data_variant,
-        option::allow_mutation_read_page_without_live_row>>;
+    using option_set = parition_slice_options::option_set;
     clustering_row_ranges _row_ranges;
 public:
     column_id_vector static_columns; // TODO: consider using bitmap
     column_id_vector regular_columns;  // TODO: consider using bitmap
     option_set options;
 private:
-    std::unique_ptr<specific_ranges> _specific_ranges;
+    std::unique_ptr<specific_ranges_old> _specific_ranges;
     uint32_t _partition_row_limit_low_bits;
     uint32_t _partition_row_limit_high_bits;
 public:
-    partition_slice(clustering_row_ranges row_ranges, column_id_vector static_columns,
+    partition_slice_old(clustering_row_ranges row_ranges, column_id_vector static_columns,
         column_id_vector regular_columns, option_set options,
-        std::unique_ptr<specific_ranges> specific_ranges,
+        std::unique_ptr<specific_ranges_old> specific_ranges,
         cql_serialization_format,
         uint32_t partition_row_limit_low_bits,
         uint32_t partition_row_limit_high_bits);
-    partition_slice(clustering_row_ranges row_ranges, column_id_vector static_columns,
+    partition_slice_old(clustering_row_ranges row_ranges, column_id_vector static_columns,
         column_id_vector regular_columns, option_set options,
-        std::unique_ptr<specific_ranges> specific_ranges = nullptr,
+        std::unique_ptr<specific_ranges_old> specific_ranges = nullptr,
         uint64_t partition_row_limit = partition_max_rows);
-    partition_slice(clustering_row_ranges ranges, const schema& schema, const column_set& mask, option_set options);
-    partition_slice(const partition_slice&);
-    partition_slice(partition_slice&&);
-    ~partition_slice();
+    partition_slice_old(clustering_row_ranges ranges, const schema& schema, const column_set& mask, option_set options);
+    partition_slice_old(const partition_slice_old&);
+    ~partition_slice_old();
 
-    partition_slice& operator=(partition_slice&& other) noexcept;
+    partition_slice& operator=(partition_slice_old&& other) noexcept;
 
     const clustering_row_ranges& row_ranges(const schema&, const partition_key&) const;
     void set_range(const schema&, const partition_key&, clustering_row_ranges);
@@ -230,7 +236,7 @@ public:
     const clustering_row_ranges& default_row_ranges() const {
         return _row_ranges;
     }
-    const std::unique_ptr<specific_ranges>& get_specific_ranges() const {
+    const std::unique_ptr<specific_ranges_old>& get_specific_ranges() const {
         return _specific_ranges;
     }
     const cql_serialization_format cql_format() const {
@@ -252,11 +258,12 @@ public:
 
     [[nodiscard]]
     bool is_reversed() const {
-        return options.contains<query::partition_slice::option::reversed>();
+        return options.contains<query::partition_slice_old::option::reversed>();
     }
 
-    friend std::ostream& operator<<(std::ostream& out, const partition_slice& ps);
-    friend std::ostream& operator<<(std::ostream& out, const specific_ranges& ps);
+    friend std::ostream& operator<<(std::ostream& out, const partition_slice_old& ps);
+    friend std::ostream& operator<<(std::ostream& out, const specific_ranges_old& ps);
+    friend class partition_slice;
 };
 
 // See docs/dev/reverse-reads.md
@@ -363,11 +370,11 @@ public:
 // Full specification of a query to the database.
 // Intended for passing across replicas.
 // Can be accessed across cores.
-class read_command {
+class read_command_old {
 public:
     table_id cf_id;
     table_schema_version schema_version; // TODO: This should be enough, drop cf_id
-    partition_slice slice;
+    partition_slice_old slice;
     uint32_t row_limit_low_bits;
     gc_clock::time_point timestamp;
     std::optional<tracing::trace_info> trace_info;
@@ -396,9 +403,9 @@ public:
     db::allow_per_partition_rate_limit allow_limit; // not serialized
 public:
     // IDL constructor
-    read_command(table_id cf_id,
+    read_command_old(table_id cf_id,
                  table_schema_version schema_version,
-                 partition_slice slice,
+                 partition_slice_old slice,
                  uint32_t row_limit_low_bits,
                  gc_clock::time_point now,
                  std::optional<tracing::trace_info> ti,
@@ -424,9 +431,9 @@ public:
         , allow_limit(db::allow_per_partition_rate_limit::no)
     { }
 
-    read_command(table_id cf_id,
+    read_command_old(table_id cf_id,
             table_schema_version schema_version,
-            partition_slice slice,
+            partition_slice_old slice,
             query::max_result_size max_result_size,
             query::tombstone_limit tombstone_limit,
             query::row_limit row_limit = query::row_limit::max,
@@ -461,13 +468,13 @@ public:
         row_limit_low_bits = static_cast<uint32_t>(new_row_limit);
         row_limit_high_bits = static_cast<uint32_t>(new_row_limit >> 32);
     }
-    friend std::ostream& operator<<(std::ostream& out, const read_command& r);
+    friend std::ostream& operator<<(std::ostream& out, const read_command_old& r);
 };
 
 // Reverse read_command by reversing the schema version and transforming the slice from
 // the legacy reversed format to native reversed format. Shall be called with reversed
 // queries only.
-lw_shared_ptr<query::read_command> reversed(lw_shared_ptr<query::read_command>&& cmd);
+lw_shared_ptr<query::read_command_old> reversed(lw_shared_ptr<query::read_command_old>&& cmd);
 
 struct mapreduce_request {
     enum class reduction_type {
@@ -486,7 +493,7 @@ struct mapreduce_request {
 
     std::vector<reduction_type> reduction_types;
 
-    query::read_command cmd;
+    query::read_command_old cmd;
     dht::partition_range_vector pr;
 
     db::consistency_level cl;
@@ -512,9 +519,9 @@ std::ostream& operator<<(std::ostream& out, const query::mapreduce_result::print
 }
 
 
-template <> struct fmt::formatter<query::specific_ranges> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<query::specific_ranges_old> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<query::partition_slice> : fmt::ostream_formatter {};
-template <> struct fmt::formatter<query::read_command> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<query::read_command_old> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<query::mapreduce_request> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<query::mapreduce_request::reduction_type> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<query::mapreduce_request::aggregation_info> : fmt::ostream_formatter {};

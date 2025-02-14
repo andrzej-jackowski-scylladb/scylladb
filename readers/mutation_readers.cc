@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.0
  */
 
+#include "mutation/position_in_partition.hh"
 #include "utils/assert.hh"
 #include "clustering_key_filter.hh"
 #include "clustering_ranges_walker.hh"
@@ -234,7 +235,7 @@ mutation_reader make_slicing_filtering_reader(mutation_reader rd, const dht::par
                             if (!_pr->contains(dk, _cmp)) {
                                 co_return co_await _rd.next_partition();
                             }
-                            _partition_slicer.emplace(_schema, _permit, _slice->row_ranges(*_schema, dk.key()),
+                            _partition_slicer.emplace(_schema, _permit, query::to_clustering_ranges(_slice->row_ranges(*_schema, dk.key()), *_schema),
                                                       [this] (mutation_fragment_v2 mf) {
                                                           push_mutation_fragment(std::move(mf));
                                                       });
@@ -1131,7 +1132,7 @@ make_mutation_reader_from_fragments(schema_ptr schema, reader_permit permit, std
         auto&& mf = *it++;
         auto kind = mf.mutation_fragment_kind();
         SCYLLA_ASSERT(kind == mutation_fragment_v2::kind::partition_start);
-        partition_slicer slicer(schema, permit, slice.row_ranges(*schema, mf.as_partition_start().key().key()),
+        partition_slicer slicer(schema, permit, query::to_clustering_ranges(slice.row_ranges(*schema, mf.as_partition_start().key().key()), *schema),
                                 [&filtered] (mutation_fragment_v2 mf) {
                                     filtered.push_back(std::move(mf));
                                 });

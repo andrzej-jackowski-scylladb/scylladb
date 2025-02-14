@@ -1746,8 +1746,8 @@ future<mutation> database::do_apply_counter_update(column_family& cf, const froz
     regular_columns.erase(std::unique(regular_columns.begin(), regular_columns.end()),
                           regular_columns.end());
 
-    auto slice = query::partition_slice(std::move(cr_ranges), std::move(static_columns),
-        std::move(regular_columns), { }, { }, query::max_rows);
+    auto slice = query::partition_slice(query::partition_slice_old(std::move(cr_ranges), std::move(static_columns),
+        std::move(regular_columns), { }, { }, query::max_rows));
 
     auto op = cf.write_in_progress();
 

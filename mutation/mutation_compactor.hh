@@ -9,6 +9,7 @@
 #pragma once
 
 #include "compaction/compaction_garbage_collector.hh"
+#include "mutation/position_in_partition.hh"
 #include "mutation_fragment.hh"
 #include "mutation_fragment_stream_validator.hh"
 #include "tombstone_gc.hh"
@@ -308,7 +309,7 @@ public:
         , _slice(slice)
         , _row_limit(limit)
         , _partition_limit(partition_limit)
-        , _partition_row_limit(_slice.options.contains(query::partition_slice::option::distinct) ? 1 : slice.partition_row_limit())
+        , _partition_row_limit(_slice.options.contains(query::partition_slice_old::option::distinct) ? 1 : slice.partition_row_limit())
         , _tombstone_gc_state(nullptr)
         , _last_dk({dht::token(), partition_key::make_empty()})
         , _last_pos(position_in_partition::for_partition_end())
@@ -342,8 +343,8 @@ public:
         auto& pk = dk.key();
         _dk = &dk;
         _return_static_content_on_partition_with_no_rows =
-            _slice.options.contains(query::partition_slice::option::always_return_static_content) ||
-            !has_ck_selector(_slice.row_ranges(_schema, pk));
+            _slice.options.contains(query::partition_slice_old::option::always_return_static_content) ||
+            !has_ck_selector(query::to_clustering_ranges(_slice.row_ranges(_schema, pk), _schema)); // TODO can be more efficient
         _empty_partition = true;
         _empty_partition_in_gc_consumer = true;
         _rows_in_current_partition = 0;

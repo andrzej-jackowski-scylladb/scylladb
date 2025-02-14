@@ -14,7 +14,9 @@
 #include "replica/database.hh"
 #include "replica/mutation_dump.hh"
 #include "replica/query_state.hh"
+#include "schema/schema.hh"
 #include "schema/schema_builder.hh"
+#include "schema/schema_fwd.hh"
 #include "schema/schema_registry.hh"
 #include "sstables/sstables.hh"
 #include "utils/hashers.hh"
@@ -162,7 +164,8 @@ private:
         };
 
         for (const auto& cr : ranges) {
-            const auto exploded_cr = cr.transform([this] (const clustering_key& ck) {
+            // TODO handle empty option; can be done better
+            const auto exploded_cr = position_range_to_clustering_range(cr, *_schema).value().transform([this] (const clustering_key& ck) {
                 auto elements = ck.explode(*_schema);
                 while (!elements.empty() && elements.back().empty()) {
                     elements.pop_back();

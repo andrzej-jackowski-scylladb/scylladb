@@ -822,3 +822,270 @@ template <> struct fmt::formatter<position_range> : fmt::formatter<string_view> 
         return fmt::format_to(ctx.out(), "{{{}, {}}}", range.start(), range.end());
     }
 };
+
+namespace query
+{
+class specific_ranges {
+    public:
+    specific_ranges(partition_key pk, std::vector<position_range> ranges)
+            : _pk(std::move(pk)), _ranges(std::move(ranges)) {
+    }
+    specific_ranges(const specific_ranges&) = default;
+    explicit specific_ranges(query::specific_ranges_old && v1)
+    : _pk(std::move(v1._pk)), _ranges{} {
+        for(auto & r : v1._ranges) 
+        {
+            _ranges.push_back(position_range::from_range(r));
+        }
+    }
+
+    void add(const schema& s, partition_key pk, std::vector<position_range> ranges) {
+        if (!_pk.equal(s, pk)) {
+            throw std::runtime_error("Only single specific range supported currently");
+        }
+        _pk = std::move(pk);
+        _ranges = std::move(ranges);
+    }
+    bool contains(const schema& s, const partition_key& pk) {
+        return _pk.equal(s, pk);
+    }
+    size_t size() const {
+        return 1;
+    }
+    const std::vector<position_range>* range_for(const schema& s, const partition_key& key) const {
+        if (_pk.equal(s, key)) {
+            return &_ranges;
+        }
+        return nullptr;
+    }
+    const partition_key& pk() const {
+        return _pk;
+    }
+    const std::vector<position_range>& ranges() const {
+        return _ranges;
+    }
+    std::vector<position_range>& ranges() {
+        return _ranges;
+    }
+private:
+    friend std::ostream& operator<<(std::ostream& out, const specific_ranges& r);
+
+    partition_key _pk;
+    std::vector<position_range> _ranges;
+};
+
+class partition_slice : public parition_slice_options {
+    friend class ::partition_slice_builder;
+public:
+    using option_set = parition_slice_options::option_set;
+    std::vector<position_range> _row_ranges;
+public:
+    column_id_vector static_columns; // TODO: consider using bitmap
+    column_id_vector regular_columns;  // TODO: consider using bitmap
+    partition_slice_old::option_set options;
+private:
+    std::unique_ptr<specific_ranges> _specific_ranges;
+    uint32_t _partition_row_limit_low_bits;
+    uint32_t _partition_row_limit_high_bits;
+public:
+    partition_slice(std::vector<position_range> row_ranges, column_id_vector static_columns,
+        column_id_vector regular_columns, partition_slice_old::option_set options,
+        std::unique_ptr<specific_ranges> specific_ranges = nullptr,
+        uint64_t partition_row_limit = partition_max_rows);
+    partition_slice(std::vector<position_range> ranges, const schema& schema, const column_set& mask, partition_slice_old::option_set options);
+    partition_slice(const partition_slice&);
+    partition_slice(const partition_slice&&);
+    explicit partition_slice(const partition_slice_old&& v1)
+    : _row_ranges{} // TODO change constructor parameter
+    , static_columns(std::move(v1.static_columns))
+    , regular_columns(std::move(v1.regular_columns))
+    , options(v1.options)
+    , _specific_ranges(std::make_unique<specific_ranges>(std::move(*v1._specific_ranges)))
+    , _partition_row_limit_low_bits(v1._partition_row_limit_low_bits)
+    , _partition_row_limit_high_bits(v1._partition_row_limit_high_bits)
+    {
+        for(auto & r : v1._row_ranges) 
+        {
+            _row_ranges.push_back(position_range::from_range(r));
+        }
+    }
+
+    ~partition_slice();
+
+    partition_slice& operator=(partition_slice&& other) noexcept;
+
+    const std::vector<position_range>& row_ranges(const schema&, const partition_key&) const;
+    void set_range(const schema&, const partition_key&, clustering_row_ranges);
+    void clear_range(const schema&, const partition_key&);
+    void clear_ranges() {
+        _specific_ranges = nullptr;
+    }
+    // FIXME: possibly make this function return a const ref instead.
+    clustering_row_ranges get_all_ranges() const;
+
+    const std::vector<position_range> default_row_ranges() const {
+        return _row_ranges;
+    }
+    const std::unique_ptr<specific_ranges>& get_specific_ranges() const {
+        return _specific_ranges;
+    }
+    const cql_serialization_format cql_format() const {
+        return cql_serialization_format(4); // For IDL compatibility
+    }
+    uint32_t partition_row_limit_low_bits() const {
+        return _partition_row_limit_low_bits;
+    }
+    uint32_t partition_row_limit_high_bits() const {
+        return _partition_row_limit_high_bits;
+    }
+    uint64_t partition_row_limit() const {
+        return (static_cast<uint64_t>(_partition_row_limit_high_bits) << 32) | _partition_row_limit_low_bits;
+    }
+    void set_partition_row_limit(uint64_t limit) {
+        _partition_row_limit_low_bits = static_cast<uint64_t>(limit);
+        _partition_row_limit_high_bits = static_cast<uint64_t>(limit >> 32);
+    }
+
+    [[nodiscard]]
+    bool is_reversed() const {
+        return options.contains<query::partition_slice_old::option::reversed>();
+    }
+
+    friend std::ostream& operator<<(std::ostream& out, const partition_slice& ps);
+    friend std::ostream& operator<<(std::ostream& out, const specific_ranges& ps);
+};
+
+class read_command {
+    public:
+        table_id cf_id;
+        table_schema_version schema_version; // TODO: This should be enough, drop cf_id
+        partition_slice slice;
+        uint32_t row_limit_low_bits;
+        gc_clock::time_point timestamp;
+        std::optional<tracing::trace_info> trace_info;
+        uint32_t partition_limit; // The maximum number of live partitions to return.
+        // The "query_uuid" field is useful in pages queries: It tells the replica
+        // that when it finishes the read request prematurely, i.e., reached the
+        // desired number of rows per page, it should not destroy the reader object,
+        // rather it should keep it alive - at its current position - and save it
+        // under the unique key "query_uuid". Later, when we want to resume
+        // the read at exactly the same position (i.e., to request the next page)
+        // we can pass this same unique id in that query's "query_uuid" field.
+        query_id query_uuid;
+        // Signal to the replica that this is the first page of a (maybe) paged
+        // read request as far the replica is concerned. Can be used by the replica
+        // to avoid doing work normally done on paged requests, e.g. attempting to
+        // reused suspended readers.
+        query::is_first_page is_first_page;
+        // The maximum size of the query result, for all queries.
+        // We use the entire value range, so we need an optional for the case when
+        // the remote doesn't send it.
+        std::optional<query::max_result_size> max_result_size;
+        uint32_t row_limit_high_bits;
+        // Cut the page after processing this many tombstones (even if the page is empty).
+        uint64_t tombstone_limit;
+        api::timestamp_type read_timestamp; // not serialized
+        db::allow_per_partition_rate_limit allow_limit; // not serialized
+    public:
+        // IDL constructor
+        read_command(table_id cf_id,
+                     table_schema_version schema_version,
+                     partition_slice slice,
+                     uint32_t row_limit_low_bits,
+                     gc_clock::time_point now,
+                     std::optional<tracing::trace_info> ti,
+                     uint32_t partition_limit,
+                     query_id query_uuid,
+                     query::is_first_page is_first_page,
+                     std::optional<query::max_result_size> max_result_size,
+                     uint32_t row_limit_high_bits,
+                     uint64_t tombstone_limit)
+            : cf_id(std::move(cf_id))
+            , schema_version(std::move(schema_version))
+            , slice(std::move(slice))
+            , row_limit_low_bits(row_limit_low_bits)
+            , timestamp(now)
+            , trace_info(std::move(ti))
+            , partition_limit(partition_limit)
+            , query_uuid(query_uuid)
+            , is_first_page(is_first_page)
+            , max_result_size(max_result_size)
+            , row_limit_high_bits(row_limit_high_bits)
+            , tombstone_limit(tombstone_limit)
+            , read_timestamp(api::new_timestamp())
+            , allow_limit(db::allow_per_partition_rate_limit::no)
+        { }
+    
+        read_command(table_id cf_id,
+                table_schema_version schema_version,
+                partition_slice slice,
+                query::max_result_size max_result_size,
+                query::tombstone_limit tombstone_limit,
+                query::row_limit row_limit = query::row_limit::max,
+                query::partition_limit partition_limit = query::partition_limit::max,
+                gc_clock::time_point now = gc_clock::now(),
+                std::optional<tracing::trace_info> ti = std::nullopt,
+                query_id query_uuid = query_id::create_null_id(),
+                query::is_first_page is_first_page = query::is_first_page::no,
+                api::timestamp_type rt = api::new_timestamp(),
+                db::allow_per_partition_rate_limit allow_limit = db::allow_per_partition_rate_limit::no)
+            : cf_id(std::move(cf_id))
+            , schema_version(std::move(schema_version))
+            , slice(std::move(slice))
+            , row_limit_low_bits(static_cast<uint32_t>(row_limit))
+            , timestamp(now)
+            , trace_info(std::move(ti))
+            , partition_limit(static_cast<uint32_t>(partition_limit))
+            , query_uuid(query_uuid)
+            , is_first_page(is_first_page)
+            , max_result_size(max_result_size)
+            , row_limit_high_bits(static_cast<uint32_t>(static_cast<uint64_t>(row_limit) >> 32))
+            , tombstone_limit(static_cast<uint64_t>(tombstone_limit))
+            , read_timestamp(rt)
+            , allow_limit(allow_limit)
+        { }
+    
+        explicit read_command(read_command && v1)
+        : cf_id(std::move(v1.cf_id))
+        , schema_version(std::move(v1.schema_version))
+        , slice(partition_slice(std::move(v1.slice)))
+        , row_limit_low_bits(v1.row_limit_low_bits)
+        , timestamp(v1.timestamp)
+        , trace_info(std::move(v1.trace_info))
+        , partition_limit(v1.partition_limit)
+        , query_uuid(v1.query_uuid)
+        , is_first_page(v1.is_first_page)
+        , max_result_size(v1.max_result_size)
+        , row_limit_high_bits(v1.row_limit_high_bits)
+        , tombstone_limit(v1.tombstone_limit)
+        , read_timestamp(api::new_timestamp())
+        , allow_limit(db::allow_per_partition_rate_limit::no)
+        {
+
+        }
+    
+        uint64_t get_row_limit() const {
+            return (static_cast<uint64_t>(row_limit_high_bits) << 32) | row_limit_low_bits;
+        }
+        void set_row_limit(uint64_t new_row_limit) {
+            row_limit_low_bits = static_cast<uint32_t>(new_row_limit);
+            row_limit_high_bits = static_cast<uint32_t>(new_row_limit >> 32);
+        }
+        friend std::ostream& operator<<(std::ostream& out, const read_command& r);
+    };
+
+query::clustering_row_ranges to_clustering_ranges(std::vector<position_range> const & ranges, const schema& s)
+{
+    query::clustering_row_ranges ret;
+    for (auto & r : ranges)
+    {
+        auto opt = position_range_to_clustering_range(r, s);
+        if (opt.has_value())
+        {
+            ret.push_back(opt.value());
+        }
+    }
+    return ret;
+}
+
+}

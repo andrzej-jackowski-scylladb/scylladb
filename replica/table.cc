@@ -17,6 +17,7 @@
 #include <seastar/util/closeable.hh>
 #include <seastar/util/defer.hh>
 
+#include "mutation/position_in_partition.hh"
 #include "replica/database.hh"
 #include "replica/data_dictionary_impl.hh"
 #include "replica/compaction_group.hh"
@@ -3824,12 +3825,12 @@ future<row_locker::lock_holder> table::do_push_view_replica_updates(shared_ptr<d
     opts.set(query::partition_slice::option::send_timestamp);
     opts.set(query::partition_slice::option::send_ttl);
     opts.add(custom_opts);
-    auto slice = query::partition_slice(
-            std::move(cr_ranges), std::move(static_columns), std::move(regular_columns), std::move(opts), { }, query::max_rows);
+    auto slice = query::partition_slice(query::partition_slice_old(
+            std::move(cr_ranges), std::move(static_columns), std::move(regular_columns), std::move(opts), { }, query::max_rows));
     // Take the shard-local lock on the base-table row or partition as needed.
     // We'll return this lock to the caller, which will release it after
     // writing the base-table update.
-    future<row_locker::lock_holder> lockf = local_base_lock(base, m.decorated_key(), slice.default_row_ranges(), timeout);
+    future<row_locker::lock_holder> lockf = local_base_lock(base, m.decorated_key(), query::to_clustering_ranges(slice.default_row_ranges(), *s), timeout);
     co_await utils::get_local_injector().inject("table_push_view_replica_updates_timeout", timeout);
     auto lock = co_await std::move(lockf);
     auto pk = dht::partition_range::make_singular(m.decorated_key());
