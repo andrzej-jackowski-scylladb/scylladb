@@ -540,6 +540,7 @@ future<query::mapreduce_result> mapreduce_service::dispatch(query::mapreduce_req
     schema_ptr schema = local_schema_registry().get(req.cmd.schema_version);
     replica::table& cf = _db.local().find_column_family(schema);
     auto erm = cf.get_effective_replication_map();
+    co_await utils::get_local_injector().inject("stop_in_mapreduce_service", utils::wait_for_message(5min));
     // next_vnode is used to iterate through all vnodes produced by
     // query_ranges_to_vnodes_generator.
     auto next_vnode = [
