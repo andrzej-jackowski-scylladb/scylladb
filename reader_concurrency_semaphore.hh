@@ -24,6 +24,40 @@ using namespace seastar;
 class mutation_reader;
 using mutation_reader_opt = optimized_optional<mutation_reader>;
 
+// A shared pool of memory that can be used by multiple reader_concurrency_semaphores.
+// When a semaphore exhausts its dedicated memory, it can borrow from this pool.
+class shared_memory_pool {
+    ssize_t _available_memory;
+    ssize_t _total_memory;
+public:
+    explicit shared_memory_pool(ssize_t memory) noexcept
+        : _available_memory(memory)
+        , _total_memory(memory) {}
+
+    void consume(ssize_t amount) noexcept {
+        _available_memory -= amount;
+    }
+
+    void signal(ssize_t amount) noexcept;
+
+    ssize_t available_memory() const noexcept {
+        if (_available_memory < 0) {
+            return 0;
+        }
+        return _available_memory;
+    }
+
+    ssize_t total_memory() const noexcept {
+        return _total_memory;
+    }
+
+    void set_total_memory(ssize_t memory) noexcept {
+        const auto diff = memory - _total_memory;
+        _total_memory = memory;
+        _available_memory += diff;
+    }
+};
+
 /// Specific semaphore for controlling reader concurrency
 ///
 /// Use `make_permit()` to create a permit to track the resource consumption

@@ -8,6 +8,14 @@
 
 #include "reader_concurrency_semaphore_group.hh"
 
+void shared_memory_pool::signal(ssize_t amount) noexcept {
+    _available_memory += amount;
+    if (_available_memory > _total_memory)  [[unlikely]] {
+        // Clamp _available_memory in case of negative memory leak
+        _available_memory = _total_memory;
+    }
+}
+
 // Calling adjust is serialized since 2 adjustments can't happen simultaneously,
 // if they did the behaviour would be undefined.
 future<> reader_concurrency_semaphore_group::adjust() {
