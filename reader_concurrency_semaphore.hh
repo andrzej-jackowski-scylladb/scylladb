@@ -31,6 +31,7 @@ using mutation_reader_opt = optimized_optional<mutation_reader>;
 class shared_memory_pool {
     ssize_t _available_memory;
     ssize_t _total_memory;
+    seastar::metrics::metric_groups _metrics;
 public:
     explicit shared_memory_pool(ssize_t memory) noexcept
         : _available_memory(memory)
@@ -59,6 +60,8 @@ public:
     ssize_t total_memory() const noexcept {
         return _total_memory;
     }
+
+    void register_metrics(const seastar::sstring& name);
 
     void set_total_memory(ssize_t memory) noexcept {
         const auto diff = memory - _total_memory;

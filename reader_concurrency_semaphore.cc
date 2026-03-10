@@ -1169,6 +1169,10 @@ reader_concurrency_semaphore::reader_concurrency_semaphore(
                                sm::description("Counts the total number of failed user read operations. "
                                                "Add the total_reads to this value to get the total amount of reads issued on this shard."),
                                {class_label(_name)}),
+
+                sm::make_gauge("reads_memory_borrowed_from_shared_pool", [this] { return _borrowed_from_shared; },
+                               sm::description("Holds the current amount of memory borrowed from the shared pool."),
+                               {class_label(_name)}),
                 });
     }
 }

@@ -7,6 +7,24 @@
  */
 
 #include "reader_concurrency_semaphore_group.hh"
+#include <seastar/core/metrics.hh>
+
+namespace sm = seastar::metrics;
+
+static const sm::label class_label("class");
+
+void shared_memory_pool::register_metrics(const sstring& name) {
+    _metrics.add_group("database", {
+        sm::make_gauge("reads_shared_pool_available_memory",
+                       [this] { return _available_memory; },
+                       sm::description("Holds the current amount of available memory in the shared reader concurrency semaphore pool."),
+                       {class_label(name)}),
+        sm::make_gauge("reads_shared_pool_total_memory",
+                       [this] { return _total_memory; },
+                       sm::description("Holds the total memory of the shared reader concurrency semaphore pool."),
+                       {class_label(name)}),
+    });
+}
 
 void shared_memory_pool::signal(ssize_t amount) noexcept {
     _available_memory += amount;

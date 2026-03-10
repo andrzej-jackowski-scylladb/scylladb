@@ -78,6 +78,9 @@ public:
             , _operations_serializer(1)
             , _name_prefix(std::move(name_prefix))
     {
+        if (shared_pool_percent > 0) {
+            _shared_pool.register_metrics(_name_prefix.value_or("unnamed"));
+        }
         if (shared_pool_percent > 100) {
             throw exceptions::configuration_exception(fmt::format(
                 "shared_pool_percent must be in range [0, 100], got {}", shared_pool_percent));
