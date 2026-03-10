@@ -26,6 +26,8 @@ using mutation_reader_opt = optimized_optional<mutation_reader>;
 
 // A shared pool of memory that can be used by multiple reader_concurrency_semaphores.
 // When a semaphore exhausts its dedicated memory, it can borrow from this pool.
+// A pool with total_memory=0 is inert: available_memory() returns 0, so no
+// borrowing occurs.
 class shared_memory_pool {
     ssize_t _available_memory;
     ssize_t _total_memory;
@@ -33,6 +35,13 @@ public:
     explicit shared_memory_pool(ssize_t memory) noexcept
         : _available_memory(memory)
         , _total_memory(memory) {}
+
+    /// Return a per-shard empty pool (total_memory=0) for semaphores that
+    /// do not participate in any shared pool.
+    static shared_memory_pool& empty_pool() noexcept {
+        static thread_local shared_memory_pool instance{0};
+        return instance;
+    }
 
     void consume(ssize_t amount) noexcept {
         _available_memory -= amount;
@@ -198,6 +207,8 @@ public:
 private:
     resources _initial_resources;
     resources _resources;
+    shared_memory_pool& _shared_pool;
+    ssize_t _borrowed_from_shared = 0;
     utils::observer<int> _count_observer;
 
     struct wait_queue {
@@ -327,7 +338,8 @@ public:
             utils::updateable_value<uint32_t> kill_limit_multiplier,
             utils::updateable_value<uint32_t> cpu_concurrency,
             utils::updateable_value<float> preemptive_abort_factor,
-            register_metrics metrics);
+            register_metrics metrics,
+            shared_memory_pool& shared_pool = shared_memory_pool::empty_pool());
 
     reader_concurrency_semaphore(
             int count,
@@ -338,10 +350,11 @@ public:
             utils::updateable_value<uint32_t> kill_limit_multiplier,
             utils::updateable_value<uint32_t> cpu_concurrency,
             utils::updateable_value<float> preemptive_abort_factor,
-            register_metrics metrics)
+            register_metrics metrics,
+            shared_memory_pool& shared_pool = shared_memory_pool::empty_pool())
         : reader_concurrency_semaphore(utils::updateable_value(count), memory, std::move(name), max_queue_length,
                 std::move(serialize_limit_multiplier), std::move(kill_limit_multiplier), std::move(cpu_concurrency),
-                std::move(preemptive_abort_factor), metrics)
+                std::move(preemptive_abort_factor), metrics, shared_pool)
     { }
 
     /// Create a semaphore with practically unlimited count and memory.
@@ -362,9 +375,10 @@ public:
             utils::updateable_value<uint32_t> kill_limit_multipler = utils::updateable_value(std::numeric_limits<uint32_t>::max()),
             utils::updateable_value<uint32_t> cpu_concurrency = utils::updateable_value<uint32_t>(1),
             utils::updateable_value<float> preemptive_abort_factor = utils::updateable_value<float>(0.0f),
-            register_metrics metrics = register_metrics::no)
+            register_metrics metrics = register_metrics::no,
+            shared_memory_pool& shared_pool = shared_memory_pool::empty_pool())
         : reader_concurrency_semaphore(utils::updateable_value(count), memory, std::move(name), max_queue_length, std::move(serialize_limit_multipler),
-                std::move(kill_limit_multipler), std::move(cpu_concurrency), std::move(preemptive_abort_factor), metrics)
+                std::move(kill_limit_multipler), std::move(cpu_concurrency), std::move(preemptive_abort_factor), metrics, shared_pool)
     {}
 
     virtual ~reader_concurrency_semaphore();
