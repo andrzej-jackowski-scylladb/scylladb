@@ -91,6 +91,12 @@ struct object_storage_endpoint_param;
 
 }
 
+namespace audit {
+
+struct audit_rule_param;
+
+}
+
 template<>
 struct fmt::formatter<db::error_injection_at_startup> {
     constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
@@ -565,6 +571,7 @@ public:
     named_value<sstring> audit_keyspaces;
     named_value<sstring> audit_unix_socket_path;
     named_value<size_t> audit_syslog_write_buffer_size;
+    named_value<std::vector<audit::audit_rule_param>> audit_rules;
 
     named_value<sstring> ldap_url_template;
     named_value<sstring> ldap_attr_role;

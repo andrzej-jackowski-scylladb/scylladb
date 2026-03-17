@@ -31,6 +31,7 @@
 #include "db/paxos_grace_seconds_extension.hh"
 #include "db/tags/extension.hh"
 #include "db/object_storage_endpoint_param.hh"
+#include "audit/audit_rule_param.hh"
 #include "config.hh"
 #include "extensions.hh"
 #include "sstables/compressor.hh"
@@ -90,6 +91,17 @@ object_storage_endpoints_to_json(const std::vector<db::object_storage_endpoint_p
         m[e.key()] = e.to_json_string();
     }
     return value_to_json(m);
+}
+
+static
+json::json_return_type
+audit_rules_to_json(const std::vector<audit::audit_rule_param>& rules) {
+    std::vector<sstring> entries;
+    entries.reserve(rules.size());
+    for (auto& r : rules) {
+        entries.push_back(fmt::format("{}", r));
+    }
+    return value_to_json(entries);
 }
 
 static
@@ -320,6 +332,12 @@ const config_type& config_type_for<std::vector<db::object_storage_endpoint_param
 }
 
 template <>
+const config_type& config_type_for<std::vector<audit::audit_rule_param>>() {
+    static config_type ct("audit rules configuration", audit_rules_to_json);
+    return ct;
+}
+
+template <>
 const config_type& config_type_for<db::config::UUID>() {
     static config_type ct("UUID", uuid_to_json);
     return ct;
@@ -537,6 +555,14 @@ template<>
 struct convert<db::object_storage_endpoint_param> {
     static bool decode(const Node& node, db::object_storage_endpoint_param& ep) {
         ep = db::object_storage_endpoint_param::decode(node);
+        return true;
+    }
+};
+
+template<>
+struct convert<audit::audit_rule_param> {
+    static bool decode(const Node& node, audit::audit_rule_param& p) {
+        p = audit::audit_rule_param::decode(node);
         return true;
     }
 };
@@ -1576,6 +1602,15 @@ db::config::config(std::shared_ptr<db::extensions> exts)
     , audit_keyspaces(this, "audit_keyspaces", liveness::LiveUpdate, value_status::Used, "", "Comma separated list of keyspaces that will be audited. All tables in those keyspaces will be audited")
     , audit_unix_socket_path(this, "audit_unix_socket_path", value_status::Used, "/dev/log", "The path to the unix socket used for writing to syslog. Only applicable when audit is set to syslog.")
     , audit_syslog_write_buffer_size(this, "audit_syslog_write_buffer_size", value_status::Used, 1048576, "The size (in bytes) of a write buffer used when writing to syslog socket.")
+    , audit_rules(this, "audit_rules", liveness::LiveUpdate, value_status::Used, {},
+        "List of audit rules. Each rule is a (categories, keyspaces, tables, roles) tuple. "
+        "Only used when legacy config (audit_categories, audit_keyspaces, audit_tables) is completely empty. "
+        "The sink(s) are determined by the global 'audit' option. "
+        "Fields: 'categories' (comma-separated, required — empty disables the rule), "
+        "'keyspaces' (comma-separated wildcard patterns — empty means table patterns alone determine scope), "
+        "'tables' (comma-separated wildcard patterns on keyspace.table, e.g. 'billing.*' — empty means nothing, use '*' for all), "
+        "'roles' (wildcard pattern — empty means nothing, use '*' for all). "
+        "AUTH, ADMIN, and DCL categories are keyspace-independent.")
     , ldap_url_template(this, "ldap_url_template", value_status::Used, "", "LDAP URL template used by LDAPRoleManager for crafting queries.")
     , ldap_attr_role(this, "ldap_attr_role", value_status::Used, "", "LDAP attribute containing Scylla role.")
     , ldap_bind_dn(this, "ldap_bind_dn", value_status::Used, "", "Distinguished name used by LDAPRoleManager for binding to LDAP server.")
