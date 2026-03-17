@@ -32,6 +32,32 @@ void shared_memory_pool::signal(ssize_t amount) noexcept {
         // Clamp _available_memory in case of negative memory leak
         _available_memory = _total_memory;
     }
+    if (!_notify_list.empty()) {
+        // Wake a single semaphore rather than all of them.  We pop from
+        // the front (FIFO) so that every registered semaphore gets a
+        // turn: each woken semaphore re-registers at the back if it
+        // still has blocked waiters, giving round-robin fairness.
+        auto& sem = _notify_list.front().get();
+        _notify_list.pop_front();
+        sem._on_shared_pool_notify_list = false;
+        sem.maybe_wake_execution_loop();
+    }
+}
+
+void shared_memory_pool::request_wakeup(reader_concurrency_semaphore& sem) noexcept {
+    if (!sem._on_shared_pool_notify_list) {
+        sem._on_shared_pool_notify_list = true;
+        _notify_list.emplace_back(sem);
+    }
+}
+
+void shared_memory_pool::unregister_wakeup(reader_concurrency_semaphore& sem) noexcept {
+    if (sem._on_shared_pool_notify_list) {
+        sem._on_shared_pool_notify_list = false;
+        std::erase_if(_notify_list, [&sem](std::reference_wrapper<reader_concurrency_semaphore> ref) {
+            return &ref.get() == &sem;
+        });
+    }
 }
 
 // Calling adjust is serialized since 2 adjustments can't happen simultaneously,

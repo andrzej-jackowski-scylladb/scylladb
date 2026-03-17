@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <deque>
+#include <functional>
 #include <boost/intrusive/list.hpp>
 #include <seastar/core/future.hh>
 #include <seastar/core/gate.hh>
@@ -24,14 +26,23 @@ using namespace seastar;
 class mutation_reader;
 using mutation_reader_opt = optimized_optional<mutation_reader>;
 
+class reader_concurrency_semaphore;
+
 // A shared pool of memory that can be used by multiple reader_concurrency_semaphores.
 // When a semaphore exhausts its dedicated memory, it can borrow from this pool.
 // A pool with total_memory=0 is inert: available_memory() returns 0, so no
 // borrowing occurs.
+//
+// Semaphores that have waiters blocked on memory can register themselves via
+// request_wakeup().  When memory is returned to the pool, a single registered
+// semaphore is woken up (FIFO order) so it can re-evaluate admission.  If it
+// still has blocked waiters, it re-registers at the back, giving round-robin
+// fairness across all waiting semaphores.
 class shared_memory_pool {
     ssize_t _available_memory;
     ssize_t _total_memory;
     seastar::metrics::metric_groups _metrics;
+    std::deque<std::reference_wrapper<reader_concurrency_semaphore>> _notify_list;
 public:
     explicit shared_memory_pool(ssize_t memory) noexcept
         : _available_memory(memory)
@@ -49,6 +60,14 @@ public:
     }
 
     void signal(ssize_t amount) noexcept;
+
+    // Register a semaphore to be woken up the next time memory is returned
+    // to the pool.  Duplicate registrations are suppressed.
+    void request_wakeup(reader_concurrency_semaphore& sem) noexcept;
+
+    // Remove a semaphore from the notify list.  Must be called before
+    // the semaphore is destroyed to avoid dangling references.
+    void unregister_wakeup(reader_concurrency_semaphore& sem) noexcept;
 
     ssize_t available_memory() const noexcept {
         if (_available_memory < 0) {
@@ -114,6 +133,7 @@ public:
     using resources = reader_resources;
 
     friend class reader_permit;
+    friend class shared_memory_pool;
 
     enum class evict_reason {
         permit, // evicted due to permit shortage
@@ -211,6 +231,7 @@ private:
     resources _initial_resources;
     resources _resources;
     shared_memory_pool& _shared_pool;
+    bool _on_shared_pool_notify_list = false;
     ssize_t _borrowed_from_shared = 0;
     utils::observer<int> _count_observer;
 

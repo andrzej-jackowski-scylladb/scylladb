@@ -10,6 +10,7 @@
 
 #include <unordered_map>
 #include <optional>
+#include <functional>
 #include <fmt/format.h>
 #include "exceptions/exceptions.hh"
 #include "reader_concurrency_semaphore.hh"

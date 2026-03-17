@@ -1190,6 +1190,9 @@ reader_concurrency_semaphore::reader_concurrency_semaphore(no_limits, sstring na
             metrics) {}
 
 reader_concurrency_semaphore::~reader_concurrency_semaphore() {
+    if (_on_shared_pool_notify_list) {
+        _shared_pool.unregister_wakeup(*this);
+    }
     SCYLLA_ASSERT(!_stats.waiters);
     if (!_stats.total_permits) {
         // We allow destroy without stop() when the semaphore wasn't used at all yet.
@@ -1634,6 +1637,12 @@ void reader_concurrency_semaphore::maybe_admit_waiters() noexcept {
     if (admit == can_admit::maybe) {
         // Evicting readers will trigger another call to `maybe_admit_waiters()` from `signal()`.
         evict_readers_in_background();
+    }
+    if (admit != can_admit::yes && !_wait_list.empty()) {
+        // We have waiters that could not be admitted.  If the shared pool
+        // has memory returned by another semaphore, we want to be woken up
+        // to re-evaluate admission.
+        _shared_pool.request_wakeup(*this);
     }
 }
 
