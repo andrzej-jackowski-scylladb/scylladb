@@ -1099,6 +1099,107 @@ class TestCQLAudit(AuditTester):
         with self.assert_entries_were_added(session, expected_audit_entries, filter_out_cassandra_auth=False):
             self.prepare(user="cassandra", password="cassandra", create_keyspace=False)
 
+    def test_audit_rules_login(self):
+        """Test that AUTH category in rules audits login events."""
+        audit_settings = {
+            "audit": "table",
+            "audit_categories": "",
+            "audit_rules": [
+                {"categories": "AUTH", "keyspaces": "*", "tables": "*", "roles": "tracked_*"},
+            ],
+        }
+        session = self.prepare(user="cassandra", password="cassandra", audit_settings=audit_settings, create_keyspace=False)
+        session.execute("CREATE USER tracked_user WITH PASSWORD 'tracked'")
+        session.execute("CREATE USER untracked_user WITH PASSWORD 'untracked'")
+
+        expected = [AuditEntry(category="AUTH", statement="LOGIN", user="tracked_user", table="", ks="", cl="", error=False)]
+        with self.assert_entries_were_added(session, expected, filter_out_cassandra_auth=True):
+            self.patient_cql_connection(self.cluster.nodelist()[0], user="tracked_user", password="tracked")
+
+        with self.assert_no_audit_entries_were_added(session):
+            self.patient_cql_connection(self.cluster.nodelist()[0], user="untracked_user", password="untracked")
+
+    def test_audit_rules_liveupdate_sighup(self):
+        """Test live-updating audit_rules via SIGHUP config reload."""
+        audit_settings = {
+            "audit": "table",
+            "audit_categories": "DDL",
+            "audit_keyspaces": "ks",
+        }
+        session = self.prepare(audit_settings=audit_settings)
+        session.execute("CREATE TABLE ks.t (k int PRIMARY KEY, v int)")
+        node = self.cluster.nodelist()[0]
+        dml = SimpleStatement("INSERT INTO ks.t (k, v) VALUES (1, 1)")
+        expected_dml = [AuditEntry(category="DML", statement=dml.query_string,
+                                   table="t", ks="ks", user="anonymous", cl="ONE", error=False)]
+
+        # Legacy config active — DML not audited
+        with self.assert_no_audit_entries_were_added(session):
+            session.execute(dml)
+
+        # Add rule — legacy still takes precedence
+        mark = node.mark_log()
+        node.cluster.manager.server_update_config(
+            node.server_id, "audit_rules",
+            [{"categories": "DML", "keyspaces": "ks", "tables": "*", "roles": "*"}])
+        node.watch_log_for(r"Audit rules updated with 1 rule\(s\)", from_mark=mark, timeout=60)
+
+        with self.assert_no_audit_entries_were_added(session):
+            session.execute(dml)
+
+        # Clear legacy config — rules activate
+        for field in ["audit_categories", "audit_keyspaces"]:
+            mark = node.mark_log()
+            node.cluster.manager.server_update_config(node.server_id, field, "")
+            node.watch_log_for(r"Audit configuration is updated", from_mark=mark, timeout=60)
+
+        with self.assert_entries_were_added(session, expected_dml, merge_duplicate_rows=False):
+            session.execute(dml)
+
+        # Remove rules — nothing audited
+        mark = node.mark_log()
+        node.cluster.manager.server_update_config(node.server_id, "audit_rules", [])
+        node.watch_log_for(r"Audit rules updated with 0 rule\(s\)", from_mark=mark, timeout=60)
+
+        with self.assert_no_audit_entries_were_added(session):
+            session.execute(dml)
+
+    def test_audit_rules_liveupdate_cql(self):
+        """Test live-updating audit_rules via CQL, including multi-value categories."""
+        audit_settings = {
+            "audit": "table",
+            "audit_categories": "",
+        }
+        session = self.prepare(audit_settings=audit_settings)
+        session.execute("CREATE TABLE ks.t (k int PRIMARY KEY, v int)")
+        node = self.cluster.nodelist()[0]
+        dml = SimpleStatement("INSERT INTO ks.t (k, v) VALUES (1, 1)")
+        expected_dml = [AuditEntry(category="DML", statement=dml.query_string,
+                                   table="t", ks="ks", user="anonymous", cl="ONE", error=False)]
+
+        with self.assert_no_audit_entries_were_added(session):
+            session.execute(dml)
+
+        # Add rule with multi-value categories via CQL (commas separate fields,
+        # backslash protects the comma inside the categories value)
+        mark = node.mark_log()
+        session.execute(
+            "UPDATE system.config SET value = "
+            r"'[{categories=DDL\,DML, keyspaces=ks, tables=*, roles=*}]' "
+            "WHERE name = 'audit_rules'"
+        )
+        node.watch_log_for(r"Audit rules updated with 1 rule\(s\)", from_mark=mark, timeout=60)
+
+        with self.assert_entries_were_added(session, expected_dml, merge_duplicate_rows=False):
+            session.execute(dml)
+
+        mark = node.mark_log()
+        session.execute("UPDATE system.config SET value = '[]' WHERE name = 'audit_rules'")
+        node.watch_log_for(r"Audit rules updated with 0 rule\(s\)", from_mark=mark, timeout=60)
+
+        with self.assert_no_audit_entries_were_added(session):
+            session.execute(dml)
+
     def test_categories(self):
         """
         Test filtering audit categories
