@@ -16,6 +16,8 @@ add_scylla_test(auth_passwords_test
   LIBRARIES auth)
 add_scylla_test(auth_resource_test
   KIND BOOST)
+add_scylla_test(audit_test
+  KIND BOOST)
 add_scylla_test(big_decimal_test
   KIND BOOST
   LIBRARIES utils)
