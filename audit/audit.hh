@@ -18,6 +18,9 @@
 #include "enum_set.hh"
 
 #include <memory>
+#include <vector>
+#include <set>
+#include <map>
 
 namespace db {
 
@@ -50,6 +53,8 @@ namespace audit {
 
 extern logging::logger logger;
 
+struct audit_rule_param;
+
 class audit_exception : public std::exception {
     sstring _what;
 public:
@@ -75,6 +80,7 @@ class audit_info final {
     sstring _keyspace;
     sstring _table;
     sstring _query;
+    sstring _username;
     bool _batch;
 public:
     audit_info(statement_category cat, sstring keyspace, sstring table, bool batch)
@@ -86,9 +92,13 @@ public:
     void set_query_string(const std::string_view& query_string) {
         _query = sstring(query_string);
     }
+    void set_username(sstring username) {
+        _username = std::move(username);
+    }
     const sstring& keyspace() const { return _keyspace; }
     const sstring& table() const { return _table; }
     const sstring& query() const { return _query; }
+    const sstring& username() const { return _username; }
     sstring category_string() const;
     statement_category category() const { return _category; }
     bool batch() const { return _batch; }
@@ -98,12 +108,20 @@ using audit_info_ptr = std::unique_ptr<audit_info>;
 
 class storage_helper;
 
+struct audit_rule {
+    category_set categories;
+    std::vector<sstring> keyspaces_patterns;
+    std::vector<sstring> tables_patterns;
+    std::vector<sstring> roles_patterns;
+};
+
 class audit final : public seastar::async_sharded_service<audit> {
     locator::shared_token_metadata& _token_metadata;
     std::set<sstring> _audited_keyspaces;
     // Maps keyspace name to set of table names in that keyspace
     std::map<sstring, std::set<sstring>> _audited_tables;
     category_set _audited_categories;
+    std::vector<audit_rule> _audit_rules;
 
     std::unique_ptr<storage_helper> _storage_helper_ptr;
 
@@ -111,11 +129,16 @@ class audit final : public seastar::async_sharded_service<audit> {
     utils::observer<sstring> _cfg_keyspaces_observer;
     utils::observer<sstring> _cfg_tables_observer;
     utils::observer<sstring> _cfg_categories_observer;
+    utils::observer<std::vector<audit_rule_param>> _cfg_audit_rules_observer;
 
     template<class T>
     void update_config(const sstring & new_value, std::function<T(const sstring&)> parse_func, T& cfg_parameter);
+    void update_audit_rules(const std::vector<audit_rule_param>& new_value);
 
     bool should_log_table(const sstring& keyspace, const sstring& name) const;
+    static bool rule_matches(const audit_rule& rule, statement_category cat,
+                             const sstring& keyspace, const sstring& table,
+                             const sstring& username);
 public:
     static seastar::sharded<audit>& audit_instance() {
         // FIXME: leaked intentionally to avoid shutdown problems, see #293
@@ -137,13 +160,14 @@ public:
           std::set<sstring>&& audited_keyspaces,
           std::map<sstring, std::set<sstring>>&& audited_tables,
           category_set&& audited_categories,
+          std::vector<audit_rule>&& audit_rules,
           const db::config& cfg);
     ~audit();
     future<> start(const db::config& cfg);
     future<> stop();
     future<> shutdown();
     bool should_log(const audit_info* audit_info) const;
-    bool should_log_login() const { return _audited_categories.contains(statement_category::AUTH); }
+    bool should_log_login(const sstring& username) const;
     future<> log(const audit_info* audit_info, service::query_state& query_state, const cql3::query_options& options, bool error);
     future<> log_login(const sstring& username, socket_address client_ip, bool error) noexcept;
 };

@@ -8,6 +8,8 @@
 
 #include <seastar/core/future-util.hh>
 #include "audit/audit.hh"
+#include "audit/audit_rule_param.hh"
+#include "audit/rule_matcher.hh"
 #include "db/config.hh"
 #include "cql3/cql_statement.hh"
 #include "cql3/statements/batch_statement.hh"
@@ -145,6 +147,65 @@ static std::set<sstring> parse_audit_keyspaces(const sstring& data) {
     return result;
 }
 
+static std::vector<sstring> parse_keyspace_patterns(const sstring& data) {
+    std::vector<sstring> result;
+    if (!data.empty()) {
+        std::vector<sstring> tokens;
+        boost::split(tokens, data, boost::is_any_of(","));
+        for (auto& token : tokens) {
+            boost::trim(token);
+            if (!token.empty()) {
+                result.push_back(std::move(token));
+            }
+        }
+    }
+    return result;
+}
+
+static std::vector<sstring> parse_table_patterns(const sstring& data) {
+    std::vector<sstring> result;
+    if (!data.empty()) {
+        std::vector<sstring> tokens;
+        boost::split(tokens, data, boost::is_any_of(","));
+        for (auto& token : tokens) {
+            boost::trim(token);
+            if (!token.empty()) {
+                result.push_back(std::move(token));
+            }
+        }
+    }
+    return result;
+}
+
+static std::vector<sstring> parse_roles_patterns(const sstring& data) {
+    std::vector<sstring> result;
+    if (!data.empty()) {
+        std::vector<sstring> tokens;
+        boost::split(tokens, data, boost::is_any_of(","));
+        for (auto& token : tokens) {
+            boost::trim(token);
+            if (!token.empty()) {
+                result.push_back(std::move(token));
+            }
+        }
+    }
+    return result;
+}
+
+static std::vector<audit_rule> parse_audit_rules(const std::vector<audit_rule_param>& params) {
+    std::vector<audit_rule> rules;
+    rules.reserve(params.size());
+    for (const auto& p : params) {
+        audit_rule rule;
+        rule.categories = parse_audit_categories(sstring(p.categories));
+        rule.keyspaces_patterns = parse_keyspace_patterns(sstring(p.keyspaces));
+        rule.tables_patterns = parse_table_patterns(sstring(p.tables));
+        rule.roles_patterns = parse_roles_patterns(sstring(p.roles));
+        rules.push_back(std::move(rule));
+    }
+    return rules;
+}
+
 audit::audit(locator::shared_token_metadata& token_metadata,
              cql3::query_processor& qp,
              service::migration_manager& mm,
@@ -152,15 +213,18 @@ audit::audit(locator::shared_token_metadata& token_metadata,
              std::set<sstring>&& audited_keyspaces,
              std::map<sstring, std::set<sstring>>&& audited_tables,
              category_set&& audited_categories,
+             std::vector<audit_rule>&& audit_rules,
              const db::config& cfg)
     : _token_metadata(token_metadata)
     , _audited_keyspaces(std::move(audited_keyspaces))
     , _audited_tables(std::move(audited_tables))
     , _audited_categories(std::move(audited_categories))
+    , _audit_rules(std::move(audit_rules))
     , _cfg(cfg)
     , _cfg_keyspaces_observer(cfg.audit_keyspaces.observe([this] (sstring const& new_value){ update_config<std::set<sstring>>(new_value, parse_audit_keyspaces, _audited_keyspaces); }))
     , _cfg_tables_observer(cfg.audit_tables.observe([this] (sstring const& new_value){ update_config<std::map<sstring, std::set<sstring>>>(new_value, parse_audit_tables, _audited_tables); }))
     , _cfg_categories_observer(cfg.audit_categories.observe([this] (sstring const& new_value){ update_config<category_set>(new_value, parse_audit_categories, _audited_categories); }))
+    , _cfg_audit_rules_observer(cfg.audit_rules.observe([this] (const std::vector<audit_rule_param>& new_value){ update_audit_rules(new_value); }))
 {
     _storage_helper_ptr = create_storage_helper(std::move(audit_modes), qp, mm);
 }
@@ -176,9 +240,10 @@ future<> audit::start_audit(const db::config& cfg, sharded<locator::shared_token
     category_set audited_categories = parse_audit_categories(cfg.audit_categories());
     std::map<sstring, std::set<sstring>> audited_tables = parse_audit_tables(cfg.audit_tables());
     std::set<sstring> audited_keyspaces = parse_audit_keyspaces(cfg.audit_keyspaces());
+    auto audit_rules = parse_audit_rules(cfg.audit_rules());
 
-    logger.info("Audit is enabled. Auditing to: \"{}\", with the following categories: \"{}\", keyspaces: \"{}\", and tables: \"{}\"",
-                cfg.audit(), cfg.audit_categories(), cfg.audit_keyspaces(), cfg.audit_tables());
+    logger.info("Audit is enabled. Auditing to: \"{}\", with the following categories: \"{}\", keyspaces: \"{}\", tables: \"{}\", and {} audit rule(s)",
+                cfg.audit(), cfg.audit_categories(), cfg.audit_keyspaces(), cfg.audit_tables(), audit_rules.size());
 
     return audit_instance().start(std::ref(stm),
                                   std::ref(qp),
@@ -187,6 +252,7 @@ future<> audit::start_audit(const db::config& cfg, sharded<locator::shared_token
                                   std::move(audited_keyspaces),
                                   std::move(audited_tables),
                                   std::move(audited_categories),
+                                  std::move(audit_rules),
                                   std::cref(cfg))
     .then([&cfg] {
         if (!audit_instance().local_is_initialized()) {
@@ -232,9 +298,7 @@ future<> audit::log(const audit_info* audit_info, service::query_state& query_st
     const service::client_state& client_state = query_state.get_client_state();
     socket_address node_ip = _token_metadata.get()->get_topology().my_address().addr();
     db::consistency_level cl = options.get_consistency();
-    thread_local static sstring no_username("undefined");
-    static const sstring anonymous_username("anonymous");
-    const sstring& username = client_state.user() ? client_state.user()->name.value_or(anonymous_username) : no_username;
+    const sstring& username = audit_info->username();
     socket_address client_ip = client_state.get_client_address().addr();
     if (logger.is_enabled(logging::log_level::debug)) {
         logger.debug("Log written: node_ip {} category {} cl {} error {} keyspace {} query '{}' client_ip {} table {} username {}",
@@ -245,7 +309,7 @@ future<> audit::log(const audit_info* audit_info, service::query_state& query_st
         .handle_exception([audit_info, node_ip, client_ip, cl, username, error] (auto ep) {
             logger.error("Unexpected exception when writing log with: node_ip {} category {} cl {} error {} keyspace {} query '{}' client_ip {} table {} username {} exception {}",
                 node_ip, audit_info->category_string(), cl, error, audit_info->keyspace(),
-                audit_info->query(), client_ip, audit_info->table(),username, ep);
+                audit_info->query(), client_ip, audit_info->table(), username, ep);
     });
 }
 
@@ -273,6 +337,13 @@ future<> inspect(shared_ptr<cql3::cql_statement> statement, service::query_state
             return inspect(m.statement, query_state, options, error);
         });
     } else {
+        static const sstring anonymous_username("anonymous");
+        thread_local static sstring no_username("undefined");
+        const auto& client_state = query_state.get_client_state();
+        const sstring& username = client_state.user()
+            ? client_state.user()->name.value_or(anonymous_username)
+            : no_username;
+        audit_info->set_username(sstring(username));
         if (audit::local_audit_instance().should_log(audit_info)) {
             return audit::local_audit_instance().log(audit_info, query_state, options, error);
         }
@@ -281,7 +352,10 @@ future<> inspect(shared_ptr<cql3::cql_statement> statement, service::query_state
 }
 
 future<> inspect_login(const sstring& username, socket_address client_ip, bool error) {
-    if (!audit::audit_instance().local_is_initialized() || !audit::local_audit_instance().should_log_login()) {
+    if (!audit::audit_instance().local_is_initialized()) {
+        return make_ready_future<>();
+    }
+    if (!audit::local_audit_instance().should_log_login(username)) {
         return make_ready_future<>();
     }
     return audit::local_audit_instance().log_login(username, client_ip, error);
@@ -292,13 +366,63 @@ bool audit::should_log_table(const sstring& keyspace, const sstring& name) const
     return keyspace_it != _audited_tables.cend() && keyspace_it->second.find(name) != keyspace_it->second.cend();
 }
 
+bool audit::rule_matches(const audit_rule& rule, statement_category cat,
+                         const sstring& keyspace, const sstring& table,
+                         const sstring& username) {
+    if (!rule.categories.contains(cat)) {
+        return false;
+    }
+    if (!any_pattern_matches(rule.roles_patterns, username)) {
+        return false;
+    }
+    if (cat == statement_category::AUTH || cat == statement_category::ADMIN || cat == statement_category::DCL) {
+        return true;
+    }
+    return matches_keyspace_and_table(rule.tables_patterns, rule.keyspaces_patterns, keyspace, table);
+}
+
 bool audit::should_log(const audit_info* audit_info) const {
-    return _audited_categories.contains(audit_info->category())
-           && (_audited_keyspaces.find(audit_info->keyspace()) != _audited_keyspaces.cend()
-                         || should_log_table(audit_info->keyspace(), audit_info->table())
-                         || audit_info->category() == statement_category::AUTH
-                         || audit_info->category() == statement_category::ADMIN
-                         || audit_info->category() == statement_category::DCL);
+    // Legacy config takes precedence over audit_rules.
+    if (bool(_audited_categories) || !_audited_keyspaces.empty() || !_audited_tables.empty()) {
+        return _audited_categories.contains(audit_info->category())
+               && (_audited_keyspaces.find(audit_info->keyspace()) != _audited_keyspaces.cend()
+                             || should_log_table(audit_info->keyspace(), audit_info->table())
+                             || audit_info->category() == statement_category::AUTH
+                             || audit_info->category() == statement_category::ADMIN
+                             || audit_info->category() == statement_category::DCL);
+    }
+    for (const auto& rule : _audit_rules) {
+        if (rule_matches(rule, audit_info->category(), audit_info->keyspace(), audit_info->table(), audit_info->username())) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool audit::should_log_login(const sstring& username) const {
+    // Legacy config takes precedence
+    if (bool(_audited_categories) || !_audited_keyspaces.empty() || !_audited_tables.empty()) {
+        return _audited_categories.contains(statement_category::AUTH);
+    }
+    for (const auto& rule : _audit_rules) {
+        if (!rule.categories.contains(statement_category::AUTH)) {
+            continue;
+        }
+        if (any_pattern_matches(rule.roles_patterns, username)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void audit::update_audit_rules(const std::vector<audit_rule_param>& new_value) {
+    try {
+        _audit_rules = parse_audit_rules(new_value);
+    } catch (...) {
+        logger.error("Audit rules update failed: {}.", std::current_exception());
+        return;
+    }
+    logger.info("Audit rules updated with {} rule(s).", _audit_rules.size());
 }
 
 template<class T>
@@ -323,11 +447,12 @@ void audit::update_config(const sstring & new_value, std::function<T(const sstri
     }) | std::views::join;
 
     logger.info(
-        "Audit configuration is updated. Auditing to: \"{}\", with the following categories: \"{}\", keyspaces: \"{}\", and tables: \"{}\".",
+        "Audit configuration is updated. Auditing to: \"{}\", with the following categories: \"{}\", keyspaces: \"{}\", tables: \"{}\", and {} audit rule(s).",
         _cfg.audit(),
         fmt::join(std::views::transform(_audited_categories, category_to_string), ","),
         fmt::join(_audited_keyspaces, ","),
-        fmt::join(table_entries, ","));
+        fmt::join(table_entries, ","),
+        _audit_rules.size());
 }
 
 }

@@ -1609,7 +1609,7 @@ db::config::config(std::shared_ptr<db::extensions> exts)
         "Fields: 'categories' (comma-separated, required — empty disables the rule), "
         "'keyspaces' (comma-separated wildcard patterns — empty means table patterns alone determine scope), "
         "'tables' (comma-separated wildcard patterns on keyspace.table, e.g. 'billing.*' — empty means nothing, use '*' for all), "
-        "'roles' (wildcard pattern — empty means nothing, use '*' for all). "
+        "'roles' (comma-separated wildcard patterns — empty matches nothing, use '*' for all). "
         "AUTH, ADMIN, and DCL categories are keyspace-independent.")
     , ldap_url_template(this, "ldap_url_template", value_status::Used, "", "LDAP URL template used by LDAPRoleManager for crafting queries.")
     , ldap_attr_role(this, "ldap_attr_role", value_status::Used, "", "LDAP attribute containing Scylla role.")
