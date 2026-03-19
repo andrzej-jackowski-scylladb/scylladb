@@ -1120,30 +1120,113 @@ class TestCQLAudit(AuditTester):
             self.patient_cql_connection(self.cluster.nodelist()[0], user="untracked_user", password="untracked")
 
     def test_audit_rules_liveupdate_sighup(self):
-        """Test live-updating audit_rules via SIGHUP config reload."""
-        audit_settings = {
-            "audit": "table",
-            "audit_categories": "DDL",
-            "audit_keyspaces": "ks",
-        }
-        session = self.prepare(audit_settings=audit_settings)
+        """Test adding and removing audit_rules via SIGHUP config reload."""
+        session = self.prepare(audit_settings={"audit": "table", "audit_categories": ""})
         session.execute("CREATE TABLE ks.t (k int PRIMARY KEY, v int)")
         node = self.cluster.nodelist()[0]
         dml = SimpleStatement("INSERT INTO ks.t (k, v) VALUES (1, 1)")
-        expected_dml = [AuditEntry(category="DML", statement=dml.query_string,
-                                   table="t", ks="ks", user="anonymous", cl="ONE", error=False)]
+        expected = [AuditEntry(category="DML", statement=dml.query_string,
+                               table="t", ks="ks", user="anonymous", cl="ONE", error=False)]
 
-        # Legacy config active — DML not audited
-        with self.assert_no_audit_entries_were_added(session):
-            session.execute(dml)
-
-        # Add rule — legacy still takes precedence
+        # Add single rule via SIGHUP — DML now audited
         mark = node.mark_log()
         node.cluster.manager.server_update_config(
             node.server_id, "audit_rules",
             [{"categories": "DML", "keyspaces": "ks", "tables": "*", "roles": "*"}])
         node.watch_log_for(r"Audit rules updated with 1 rule\(s\)", from_mark=mark, timeout=60)
 
+        with self.assert_entries_were_added(session, expected, merge_duplicate_rows=False):
+            session.execute(dml)
+
+        # Replace with multiple rules — both rules match
+        mark = node.mark_log()
+        node.cluster.manager.server_update_config(
+            node.server_id, "audit_rules",
+            [{"categories": "DDL", "keyspaces": "ks", "tables": "*", "roles": "*"},
+             {"categories": "DML", "keyspaces": "ks", "tables": "*", "roles": "*"}])
+        node.watch_log_for(r"Audit rules updated with 2 rule\(s\)", from_mark=mark, timeout=60)
+
+        ddl = "ALTER TABLE ks.t ADD v2 int"
+        expected_multi = [
+            AuditEntry(category="DDL", statement=ddl, table="t", ks="ks", user="anonymous", cl="ONE", error=False),
+            AuditEntry(category="DML", statement=dml.query_string, table="t", ks="ks", user="anonymous", cl="ONE", error=False),
+        ]
+        with self.assert_entries_were_added(session, expected_multi, merge_duplicate_rows=False):
+            session.execute(ddl)
+            session.execute(dml)
+
+        # Reset to empty — nothing audited
+        mark = node.mark_log()
+        node.cluster.manager.server_update_config(node.server_id, "audit_rules", [])
+        node.watch_log_for(r"Audit rules updated with 0 rule\(s\)", from_mark=mark, timeout=60)
+
+        with self.assert_no_audit_entries_were_added(session):
+            session.execute(dml)
+
+    def test_audit_rules_liveupdate_cql(self):
+        """Test adding and removing audit_rules via CQL, including multi-value categories."""
+        session = self.prepare(audit_settings={"audit": "table", "audit_categories": ""})
+        session.execute("CREATE TABLE ks.t (k int PRIMARY KEY, v int)")
+        node = self.cluster.nodelist()[0]
+        dml = SimpleStatement("INSERT INTO ks.t (k, v) VALUES (1, 1)")
+        expected = [AuditEntry(category="DML", statement=dml.query_string,
+                               table="t", ks="ks", user="anonymous", cl="ONE", error=False)]
+
+        # Add single rule via CQL — commas in values need no escaping
+        # because the parser uses known field names as delimiters.
+        mark = node.mark_log()
+        session.execute(
+            "UPDATE system.config SET value = "
+            "'[{categories=DDL,DML, keyspaces=ks, tables=*, roles=*}]' "
+            "WHERE name = 'audit_rules'"
+        )
+        node.watch_log_for(r"Audit rules updated with 1 rule\(s\)", from_mark=mark, timeout=60)
+
+        with self.assert_entries_were_added(session, expected, merge_duplicate_rows=False):
+            session.execute(dml)
+
+        # Replace with multiple rules — both rules match
+        mark = node.mark_log()
+        session.execute(
+            "UPDATE system.config SET value = "
+            "'[{categories=DDL, keyspaces=ks, tables=*, roles=*}, "
+            r"{categories=DML, keyspaces=ks, tables=*, roles=*}]' "
+            "WHERE name = 'audit_rules'"
+        )
+        node.watch_log_for(r"Audit rules updated with 2 rule\(s\)", from_mark=mark, timeout=60)
+
+        ddl = "ALTER TABLE ks.t ADD v2 int"
+        expected_multi = [
+            AuditEntry(category="DDL", statement=ddl, table="t", ks="ks", user="anonymous", cl="ONE", error=False),
+            AuditEntry(category="DML", statement=dml.query_string, table="t", ks="ks", user="anonymous", cl="ONE", error=False),
+        ]
+        with self.assert_entries_were_added(session, expected_multi, merge_duplicate_rows=False):
+            session.execute(ddl)
+            session.execute(dml)
+
+        # Reset to empty — nothing audited
+        mark = node.mark_log()
+        session.execute("UPDATE system.config SET value = '[]' WHERE name = 'audit_rules'")
+        node.watch_log_for(r"Audit rules updated with 0 rule\(s\)", from_mark=mark, timeout=60)
+
+        with self.assert_no_audit_entries_were_added(session):
+            session.execute(dml)
+
+    def test_audit_rules_legacy_precedence(self):
+        """Test that non-empty legacy config (audit_categories/audit_keyspaces) takes precedence over audit_rules."""
+        session = self.prepare(audit_settings={
+            "audit": "table",
+            "audit_categories": "DDL",
+            "audit_keyspaces": "ks",
+            "audit_rules": [{"categories": "DML", "keyspaces": "ks", "tables": "*", "roles": "*"}],
+        })
+        session.execute("CREATE TABLE ks.t (k int PRIMARY KEY, v int)")
+        node = self.cluster.nodelist()[0]
+        dml = SimpleStatement("INSERT INTO ks.t (k, v) VALUES (1, 1)")
+        expected = [AuditEntry(category="DML", statement=dml.query_string,
+                               table="t", ks="ks", user="anonymous", cl="ONE", error=False)]
+
+        # Legacy active — DML rule ignored
         with self.assert_no_audit_entries_were_added(session):
             session.execute(dml)
 
@@ -1153,52 +1236,69 @@ class TestCQLAudit(AuditTester):
             node.cluster.manager.server_update_config(node.server_id, field, "")
             node.watch_log_for(r"Audit configuration is updated", from_mark=mark, timeout=60)
 
-        with self.assert_entries_were_added(session, expected_dml, merge_duplicate_rows=False):
+        with self.assert_entries_were_added(session, expected, merge_duplicate_rows=False):
             session.execute(dml)
 
-        # Remove rules — nothing audited
-        mark = node.mark_log()
-        node.cluster.manager.server_update_config(node.server_id, "audit_rules", [])
-        node.watch_log_for(r"Audit rules updated with 0 rule\(s\)", from_mark=mark, timeout=60)
+    def test_audit_rules_special_characters(self):
+        """Test audit_rules CQL path with special characters that require
+        vector-parser-level escaping.
 
-        with self.assert_no_audit_entries_were_added(session):
-            session.execute(dml)
+        When audit_rules are set via CQL (UPDATE system.config), the value
+        string passes through the vector parser before reaching the
+        field-name-aware audit_rule_param parser.  Characters with special
+        meaning in the vector parser (braces, quotes, backslash, whitespace)
+        must be backslash-escaped in the CQL string.  Commas and equals do
+        NOT need escaping because the inner parser uses known field names as
+        delimiters.
 
-    def test_audit_rules_liveupdate_cql(self):
-        """Test live-updating audit_rules via CQL, including multi-value categories."""
-        audit_settings = {
-            "audit": "table",
-            "audit_categories": "",
-        }
-        session = self.prepare(audit_settings=audit_settings)
+        This test verifies:
+        - Unescaped commas in categories (DDL,DML) work.
+        - Escaped closing brace (\}) in a role pattern is preserved.
+        - Escaped single quote (\') in a role pattern is preserved.
+        """
+        session = self.prepare(
+            user="cassandra", password="cassandra",
+            audit_settings={"audit": "table", "audit_categories": ""})
         session.execute("CREATE TABLE ks.t (k int PRIMARY KEY, v int)")
         node = self.cluster.nodelist()[0]
-        dml = SimpleStatement("INSERT INTO ks.t (k, v) VALUES (1, 1)")
-        expected_dml = [AuditEntry(category="DML", statement=dml.query_string,
-                                   table="t", ks="ks", user="anonymous", cl="ONE", error=False)]
 
-        with self.assert_no_audit_entries_were_added(session):
-            session.execute(dml)
+        # Create roles (with LOGIN) whose names contain special characters.
+        # CREATE ROLE supports double-quoted identifiers; CREATE USER does not.
+        session.execute("""CREATE ROLE "user}1" WITH PASSWORD = 'pass1' AND LOGIN = true""")
+        session.execute("""CREATE ROLE "O'Brien" WITH PASSWORD = 'pass2' AND LOGIN = true""")
 
-        # Add rule with multi-value categories via CQL (commas separate fields,
-        # backslash protects the comma inside the categories value)
+        # Rule 1: categories=DDL,DML (unescaped comma), roles matches user}1
+        # The \} is needed so the vector parser doesn't treat } as a brace.
+        # Rule 2: roles matches O'Brien — \' prevents quote-mode toggle.
+        # In CQL string literals, literal ' is written as ''.
         mark = node.mark_log()
         session.execute(
             "UPDATE system.config SET value = "
-            r"'[{categories=DDL\,DML, keyspaces=ks, tables=*, roles=*}]' "
+            r"'[{categories=DDL,DML, keyspaces=ks, tables=*, roles=user\}1}, "
+            r"{categories=DML, keyspaces=ks, tables=*, roles=O\''"
+            "Brien}]' "
             "WHERE name = 'audit_rules'"
         )
-        node.watch_log_for(r"Audit rules updated with 1 rule\(s\)", from_mark=mark, timeout=60)
+        node.watch_log_for(r"Audit rules updated with 2 rule\(s\)", from_mark=mark, timeout=60)
 
-        with self.assert_entries_were_added(session, expected_dml, merge_duplicate_rows=False):
-            session.execute(dml)
+        # user}1 matches first rule — DML is audited
+        dml = SimpleStatement("INSERT INTO ks.t (k, v) VALUES (1, 1)")
+        expected = [AuditEntry(category="DML", statement=dml.query_string,
+                               table="t", ks="ks", user='user}1', cl="ONE", error=False)]
+        user1_session = self.patient_cql_connection(
+            self.cluster.nodelist()[0], user='user}1', password='pass1')
+        session.execute("""GRANT ALL ON KEYSPACE ks TO "user}1" """)
+        with self.assert_entries_were_added(session, expected, merge_duplicate_rows=False):
+            user1_session.execute(dml)
 
-        mark = node.mark_log()
-        session.execute("UPDATE system.config SET value = '[]' WHERE name = 'audit_rules'")
-        node.watch_log_for(r"Audit rules updated with 0 rule\(s\)", from_mark=mark, timeout=60)
-
-        with self.assert_no_audit_entries_were_added(session):
-            session.execute(dml)
+        # O'Brien matches second rule — DML is audited
+        expected_ob = [AuditEntry(category="DML", statement=dml.query_string,
+                                  table="t", ks="ks", user="O'Brien", cl="ONE", error=False)]
+        ob_session = self.patient_cql_connection(
+            self.cluster.nodelist()[0], user="O'Brien", password='pass2')
+        session.execute("""GRANT ALL ON KEYSPACE ks TO "O'Brien" """)
+        with self.assert_entries_were_added(session, expected_ob, merge_duplicate_rows=False):
+            ob_session.execute(dml)
 
     def test_categories(self):
         """

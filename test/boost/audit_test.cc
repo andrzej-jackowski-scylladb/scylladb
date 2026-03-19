@@ -146,9 +146,11 @@ BOOST_AUTO_TEST_CASE(keyspace_table_matching) {
 }
 
 BOOST_AUTO_TEST_CASE(rule_param_special_characters) {
-    // Parse via operator>> (the CQL live-update path).
-    // Uses the standard config map parser: comma-separated key=value,
-    // with single-quote and backslash escaping.
+    // Direct operator>> parsing (no vector parser in front).
+    // The field-name-aware parser uses known field names (categories,
+    // keyspaces, tables, roles) as delimiters — so commas, equals,
+    // braces, quotes, and all other special characters pass through
+    // without any escaping.
     auto parse = [](std::string_view input) {
         std::istringstream is{std::string(input)};
         audit::audit_rule_param parsed;
@@ -156,29 +158,188 @@ BOOST_AUTO_TEST_CASE(rule_param_special_characters) {
         return parsed;
     };
 
-    // Asterisk in role name
+    // --- Characters that are special in the vector/map parser layer ---
+
+    // Comma — absorbed into value (not a field delimiter here)
+    {
+        auto p = parse("{categories=DDL,DML, keyspaces=*, tables=*, roles=*}");
+        BOOST_CHECK_EQUAL(p.categories, "DDL,DML");
+    }
+    {
+        auto p = parse("{categories=DDL,DML,QUERY, keyspaces=*, tables=*, roles=*}");
+        BOOST_CHECK_EQUAL(p.categories, "DDL,DML,QUERY");
+    }
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=admin,ops}");
+        BOOST_CHECK_EQUAL(p.roles, "admin,ops");
+    }
+    // Equals sign in value
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=a=b}");
+        BOOST_CHECK_EQUAL(p.roles, "a=b");
+    }
+    // Braces in value
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=user}name}");
+        BOOST_CHECK_EQUAL(p.roles, "user}name");
+    }
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=g{1,2}}");
+        BOOST_CHECK_EQUAL(p.roles, "g{1,2}");
+    }
+    // Brackets in value
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=arr[0]}");
+        BOOST_CHECK_EQUAL(p.roles, "arr[0]");
+    }
+    // Single quote
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=O'Brien}");
+        BOOST_CHECK_EQUAL(p.roles, "O'Brien");
+    }
+    // Double quote
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=say\"hi\"}");
+        BOOST_CHECK_EQUAL(p.roles, "say\"hi\"");
+    }
+    // Backslash
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=domain\\user}");
+        BOOST_CHECK_EQUAL(p.roles, "domain\\user");
+    }
+
+    // --- Characters that are special in CQL or common in identifiers ---
+
+    // Semicolon (CQL statement terminator)
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=a;b}");
+        BOOST_CHECK_EQUAL(p.roles, "a;b");
+    }
+    // Colon
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=host:port}");
+        BOOST_CHECK_EQUAL(p.roles, "host:port");
+    }
+    // Slash and question mark (URL-like)
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=svc/reader}");
+        BOOST_CHECK_EQUAL(p.roles, "svc/reader");
+    }
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=who?}");
+        BOOST_CHECK_EQUAL(p.roles, "who?");
+    }
+    // At sign, hash, dollar, percent
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=user@domain}");
+        BOOST_CHECK_EQUAL(p.roles, "user@domain");
+    }
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=#admin}");
+        BOOST_CHECK_EQUAL(p.roles, "#admin");
+    }
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=$pecial}");
+        BOOST_CHECK_EQUAL(p.roles, "$pecial");
+    }
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=100%}");
+        BOOST_CHECK_EQUAL(p.roles, "100%");
+    }
+    // Caret, ampersand, exclamation, tilde, plus, pipe
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=a^b&c!d~e+f|g}");
+        BOOST_CHECK_EQUAL(p.roles, "a^b&c!d~e+f|g");
+    }
+    // Parentheses
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=group(1)}");
+        BOOST_CHECK_EQUAL(p.roles, "group(1)");
+    }
+    // Dot and hyphen (common in identifiers)
+    {
+        auto p = parse("{categories=DML, keyspaces=*, tables=ks.tbl-v2, roles=*}");
+        BOOST_CHECK_EQUAL(p.tables, "ks.tbl-v2");
+    }
+
+    // --- Wildcard asterisk (special in our pattern matching layer) ---
+
     {
         auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=role*user}");
         BOOST_CHECK_EQUAL(p.roles, "role*user");
     }
-    // Single quote — escaped with backslash
+
+    // --- Special chars in table and keyspace fields too ---
+
     {
-        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=O\\'Brien}");
+        auto p = parse("{categories=DML, keyspaces=ks;backup, tables=tbl'x, roles=*}");
+        BOOST_CHECK_EQUAL(p.keyspaces, "ks;backup");
+        BOOST_CHECK_EQUAL(p.tables, "tbl'x");
+    }
+
+    // --- Kitchen sink: multiple special chars across multiple fields ---
+
+    {
+        auto p = parse("{categories=DDL,DML,AUTH, keyspaces=my_ks, tables=t{a,b}, roles=O'Brien}");
+        BOOST_CHECK_EQUAL(p.categories, "DDL,DML,AUTH");
+        BOOST_CHECK_EQUAL(p.keyspaces, "my_ks");
+        BOOST_CHECK_EQUAL(p.tables, "t{a,b}");
         BOOST_CHECK_EQUAL(p.roles, "O'Brien");
     }
-    // Backslash — escaped with backslash
-    {
-        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=domain\\\\user}");
-        BOOST_CHECK_EQUAL(p.roles, "domain\\user");
-    }
-    // Double quote — escaped with backslash
-    {
-        auto p = parse("{categories=DML, keyspaces=*, tables=*, roles=say\\\"hi\\\"}");
-        BOOST_CHECK_EQUAL(p.roles, "say\"hi\"");
-    }
-    // Comma in value — escaped with backslash
-    {
-        auto p = parse("{categories=DDL\\,DML, keyspaces=*, tables=*, roles=*}");
-        BOOST_CHECK_EQUAL(p.categories, "DDL,DML");
+}
+
+BOOST_AUTO_TEST_CASE(rule_param_round_trip) {
+    // Round-trip: format with fmt::formatter then parse back with operator>>.
+    //
+    // The formatter backslash-escapes characters that are special in the
+    // vector parser (' " \ { } [ ] and whitespace).  A direct operator>>
+    // call does NOT strip backslashes, so only values without those
+    // characters round-trip cleanly through format → direct-parse.
+    auto parse = [](std::string_view input) {
+        std::istringstream is{std::string(input)};
+        audit::audit_rule_param parsed;
+        is >> parsed;
+        return parsed;
+    };
+
+    struct test_case {
+        const char* label;
+        audit::audit_rule_param param;
+    };
+
+    test_case cases[] = {
+        {"simple values",
+         {"DML", "ks", "tbl", "*"}},
+        {"multi-value categories with commas",
+         {"DDL,DML,QUERY,AUTH", "ks", "*", "*"}},
+        {"dots and hyphens (common identifiers)",
+         {"DML", "my-ks.v2", "my.table-v3", "role-1.prod"}},
+        {"commas in every field",
+         {"DDL,DML", "ks1,ks2", "t1,t2", "admin,ops"}},
+        {"semicolons, colons, slashes",
+         {"DML", "ks;bak", "svc/data:v1", "user@host:22"}},
+        {"equals signs",
+         {"DML", "ks=1", "t=2", "k=v"}},
+        {"question mark, hash, dollar, percent",
+         {"DML", "ks?1", "#tbl", "$role%"}},
+        {"caret, ampersand, exclamation, tilde, plus, pipe",
+         {"DML", "a^b", "c&d!e", "~f+g|h"}},
+        {"parentheses and asterisks (wildcard chars)",
+         {"DML", "ks(*)", "tbl(*)", "role*user"}},
+        {"all categories",
+         {"DDL,DML,QUERY,AUTH,DCL,ADMIN", "*", "*", "*"}},
+        {"kitchen sink across all fields",
+         {"DDL,DML,AUTH", "ks;a,ks:b", "t/x,t.y-z", "r@h,r#2,$r%3"}},
+    };
+
+    for (const auto& [label, original] : cases) {
+        BOOST_TEST_CONTEXT("round-trip: " << label) {
+            auto formatted = fmt::format("{}", original);
+            auto p = parse(formatted);
+            BOOST_CHECK_EQUAL(p.categories, original.categories);
+            BOOST_CHECK_EQUAL(p.keyspaces, original.keyspaces);
+            BOOST_CHECK_EQUAL(p.tables, original.tables);
+            BOOST_CHECK_EQUAL(p.roles, original.roles);
+        }
     }
 }
