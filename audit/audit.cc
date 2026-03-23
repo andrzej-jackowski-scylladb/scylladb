@@ -69,7 +69,7 @@ static std::unique_ptr<storage_helper> create_storage_helper(const std::set<sstr
     return std::make_unique<audit_composite_storage_helper>(std::move(helpers));
 }
 
-static sstring category_to_string(statement_category category)
+sstring category_to_string(statement_category category)
 {
     switch (category) {
         case statement_category::QUERY: return "QUERY";
