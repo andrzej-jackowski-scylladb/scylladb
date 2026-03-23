@@ -68,6 +68,7 @@ protected:
     sstring _keyspace;
     sstring _table;
     sstring _query;
+    sstring _role;
     bool _batch; // used only for unpacking batches in CQL, not relevant for Alternator
 public:
     audit_info(statement_category cat, sstring keyspace, sstring table, bool batch)
@@ -88,9 +89,13 @@ public:
         }
         return *this;
     }
+    void set_role(sstring role) {
+        _role = std::move(role);
+    }
     const sstring& keyspace() const { return _keyspace; }
     const sstring& table() const { return _table; }
     const sstring& query() const { return _query; }
+    const sstring& role() const { return _role; }
     sstring category_string() const;
     statement_category category() const { return _category; }
     bool batch() const { return _batch; }
@@ -174,8 +179,8 @@ public:
     future<> log_login(const sstring& username, socket_address client_ip, bool error) noexcept;
 };
 
-future<> inspect(const audit_info_alternator& audit_info, const service::client_state& client_state, bool error);
-future<> inspect(shared_ptr<cql3::cql_statement> statement, const service::query_state& query_state, const cql3::query_options& options, bool error);
+future<> inspect(audit_info_alternator& audit_info, const service::client_state& client_state, bool error);
+future<> inspect(shared_ptr<cql3::cql_statement> statement, service::query_state& query_state, const cql3::query_options& options, bool error);
 
 future<> inspect_login(const sstring& username, socket_address client_ip, bool error);
 

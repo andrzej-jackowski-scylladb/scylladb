@@ -260,14 +260,14 @@ static future<> maybe_log(const audit_info& audit_info, const service::client_st
     return make_ready_future<>();
 }
 
-static future<> inspect(const audit_info& audit_info, const service::query_state& query_state, const cql3::query_options& options, bool error) {
-    return maybe_log(audit_info, query_state.get_client_state(), options.get_consistency(), error);
-}
-
-future<> inspect(shared_ptr<cql3::cql_statement> statement, const service::query_state& query_state, const cql3::query_options& options, bool error) {
+future<> inspect(shared_ptr<cql3::cql_statement> statement, service::query_state& query_state, const cql3::query_options& options, bool error) {
     const auto audit_info = statement->get_audit_info();
     if (audit_info == nullptr) {
         return make_ready_future<>();
+    }
+    const auto& client_state = query_state.get_client_state();
+    if (client_state.user() && client_state.user()->name) {
+        audit_info->set_role(*client_state.user()->name);
     }
     if (audit_info->batch()) {
         cql3::statements::batch_statement* batch = static_cast<cql3::statements::batch_statement*>(statement.get());
@@ -275,11 +275,14 @@ future<> inspect(shared_ptr<cql3::cql_statement> statement, const service::query
             return inspect(m.statement, query_state, options, error);
         });
     } else {
-        return inspect(*audit_info, query_state, options, error);
+        return maybe_log(*audit_info, client_state, options.get_consistency(), error);
     }
 }
 
-future<> inspect(const audit_info_alternator& ai, const service::client_state& client_state, bool error) {
+future<> inspect(audit_info_alternator& ai, const service::client_state& client_state, bool error) {
+    if (client_state.user() && client_state.user()->name) {
+        ai.set_role(*client_state.user()->name);
+    }
     return maybe_log(static_cast<const audit_info&>(ai), client_state, ai.get_cl(), error);
 }
 
