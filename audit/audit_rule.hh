@@ -57,6 +57,40 @@ sstring audit_rules_to_json_string(const std::vector<audit_rule>& rules);
 
 void validate_audit_rule(const audit_rule& rule);
 
+/// Returns true if the category is table-scoped (DML, DDL, QUERY).
+/// Table-independent categories (AUTH, ADMIN, DCL) bypass the table filter
+/// because they represent operations that have no meaningful keyspace/table.
+bool is_table_scoped_category(std::string_view category);
+
+/// Returns true if the given category string matches any of the rule's categories (exact match).
+/// Empty categories list matches nothing.
+bool matches_category(const audit_rule& rule, std::string_view category);
+
+/// Returns true if the given keyspace.table matches any of the rule's qualified_table_names
+/// patterns (uses fnmatch with FNM_EXTMATCH for extended glob support).
+/// Empty qualified_table_names list matches nothing.
+bool matches_table(const audit_rule& rule, std::string_view keyspace, std::string_view table);
+
+/// Same as matches_table but takes a pre-formed "keyspace.table" string.
+bool matches_qualified_table(const audit_rule& rule, std::string_view qualified_table_name);
+
+/// Returns true if the given role name matches any of the rule's role patterns
+/// (uses fnmatch with FNM_EXTMATCH for extended glob support: @(), !(), +(), *(), ?()).
+/// Empty roles list matches nothing.
+bool matches_role(const audit_rule& rule, std::string_view role);
+
+/// Returns the set of sinks declared by this rule as a bitmap.
+audit_sink_set rule_sinks(const audit_rule& rule);
+
+/// Returns true if a statement with the given attributes matches this rule.
+/// A rule matches when all three filters (categories, tables, roles) match.
+/// For table-independent categories (AUTH, ADMIN, DCL), the table filter is
+/// bypassed — these operations have no meaningful keyspace/table context.
+/// Sink filtering is handled separately via rule_sinks().
+bool matches_rule(const audit_rule& rule, std::string_view category,
+                  std::string_view keyspace, std::string_view table,
+                  std::string_view role);
+
 } // namespace audit
 
 template<>
