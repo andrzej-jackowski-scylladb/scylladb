@@ -126,6 +126,8 @@ public:
     std::optional<db::consistency_level> get_cl() const { return _cl; }
 };
 
+sstring category_to_string(statement_category category);
+
 class storage_helper;
 
 class audit final : public seastar::async_sharded_service<audit> {
