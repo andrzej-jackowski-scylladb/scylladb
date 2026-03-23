@@ -6,17 +6,17 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
-#define BOOST_TEST_MODULE audit_rule
-
 #include <boost/test/unit_test.hpp>
 
 #include <boost/program_options.hpp>
 
 #include <seastar/core/sstring.hh>
 #include <seastar/json/json_elements.hh>
+#include <seastar/testing/thread_test_case.hh>
 
 #include "audit/audit.hh"
 #include "audit/audit_rule.hh"
+#include "audit/preprocessed_audit_rules.hh"
 #include "db/config.hh"
 
 using namespace seastar;
@@ -266,4 +266,67 @@ BOOST_AUTO_TEST_CASE(test_rule_matching_and_sinks) {
     auto sinks = audit::rule_sinks(rule);
     BOOST_CHECK(sinks.contains(audit::audit_sink::table));
     BOOST_CHECK(sinks.contains(audit::audit_sink::syslog));
+}
+
+BOOST_AUTO_TEST_CASE(test_hash_consistency_for_transparent_lookups) {
+    sstring s = "test_keyspace";
+    std::string_view sv = s;
+    BOOST_REQUIRE_EQUAL(std::hash<sstring>{}(s), std::hash<std::string_view>{}(sv));
+
+    auto pair_ss = std::make_pair(sstring("ks"), sstring("tbl"));
+    auto pair_sv = std::make_pair(std::string_view("ks"), std::string_view("tbl"));
+    utils::tuple_hash h;
+    BOOST_REQUIRE_EQUAL(h(pair_ss), h(pair_sv));
+}
+
+SEASTAR_THREAD_TEST_CASE(test_preprocessed_rules_match_fast_and_slow_paths) {
+    audit::preprocessed_audit_rules rules({
+            make_rule({"table"}, {"DML", "AUTH"}, {"ks.*"}, {"admin_*"}),
+            make_rule({"syslog"}, {"DDL"}, {"ks.t2"}, {"admin_*"}),
+    });
+    rules.replace_known_entities({"admin_read", "viewer"}, {{"ks", "t1"}, {"ks", "t2"}}).get();
+
+    BOOST_CHECK(rules.matching_sinks("DML", "ks", "t1", "admin_read").contains(audit::audit_sink::table));
+    BOOST_CHECK(!rules.matching_sinks("DML", "ks", "t1", "viewer"));
+    BOOST_CHECK(rules.matching_sinks("DML", "ks", "unknown", "admin_new").contains(audit::audit_sink::table));
+    BOOST_CHECK(rules.matching_sinks("AUTH", "wrong", "tbl", "admin_read").contains(audit::audit_sink::table));
+
+    auto ddl_sinks = rules.matching_sinks("DDL", "ks", "t2", "admin_read");
+    BOOST_CHECK(ddl_sinks.contains(audit::audit_sink::syslog));
+    BOOST_CHECK(!ddl_sinks.contains(audit::audit_sink::table));
+}
+
+SEASTAR_THREAD_TEST_CASE(test_preprocessed_rules_update_known_entities) {
+    audit::preprocessed_audit_rules rules({make_rule({"table"}, {"DML"}, {"ks.t1"}, {"admin"})});
+    rules.replace_known_entities({"admin"}, {{"ks", "t1"}}).get();
+
+    BOOST_CHECK(rules.matching_sinks("DML", "ks", "t1", "admin"));
+
+    rules.remove_known_table("ks", "t1");
+    BOOST_CHECK(rules.matching_sinks("DML", "ks", "t1", "admin"));
+
+    rules.remove_known_role("admin");
+    BOOST_CHECK(rules.matching_sinks("DML", "ks", "t1", "admin"));
+
+    rules.add_known_role("admin");
+    rules.add_known_table("ks", "t1");
+    BOOST_CHECK(rules.matching_sinks("DML", "ks", "t1", "admin"));
+
+    rules.refresh_rules({make_rule({"syslog"}, {"DDL"}, {"ks.t2"}, {"viewer"})}).get();
+    BOOST_CHECK(!rules.matching_sinks("DML", "ks", "t1", "admin"));
+    BOOST_CHECK(rules.matching_sinks("DDL", "ks", "t2", "viewer").contains(audit::audit_sink::syslog));
+}
+
+SEASTAR_THREAD_TEST_CASE(test_preprocessed_empty_rules_skip_cache) {
+    audit::preprocessed_audit_rules rules;
+    rules.replace_known_entities({"alice", "bob"}, {{"ks", "t1"}, {"ks", "t2"}}).get();
+    BOOST_CHECK(!rules.matching_sinks("DML", "ks", "t1", "alice"));
+
+    rules.add_known_role("charlie");
+    rules.add_known_table("ks", "t3");
+    BOOST_CHECK(!rules.matching_sinks("DML", "ks", "t3", "charlie"));
+
+    rules.refresh_rules({make_rule({"table"}, {"DML"}, {"ks.*"}, {"*"})}).get();
+    BOOST_CHECK(rules.matching_sinks("DML", "ks", "t1", "alice"));
+    BOOST_CHECK(rules.matching_sinks("DML", "ks", "t3", "charlie"));
 }
