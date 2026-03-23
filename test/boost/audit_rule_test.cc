@@ -33,6 +33,18 @@ audit::audit_rule make_rule(std::vector<sstring> sinks,
             .qualified_table_names = std::move(tables), .roles = std::move(roles)};
 }
 
+audit::audit_rule role_rule(std::vector<sstring> patterns) {
+    return make_rule({"table"}, {}, {}, std::move(patterns));
+}
+
+audit::audit_rule table_rule(std::vector<sstring> patterns) {
+    return make_rule({"table"}, {}, std::move(patterns), {});
+}
+
+bool role_matches(const sstring& pattern, const sstring& name) {
+    return audit::matches_role(role_rule({pattern}), name);
+}
+
 void throw_on_error(const sstring& opt, const sstring& msg, std::optional<utils::config_file::value_status> status) {
     if (status != db::config::value_status::Invalid) {
         throw std::invalid_argument(msg + " : " + opt);
@@ -211,4 +223,47 @@ BOOST_AUTO_TEST_CASE(test_config_audit_rules_rejects_invalid_values) {
         throw_on_error), std::exception);
 
     BOOST_CHECK_THROW(cfg.audit_rules.set_value(sstring("{not json}"), utils::config_file::config_source::CQL), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(test_matching_primitives) {
+    auto category_rule = make_rule({"table"}, {"DML", "AUTH"});
+    BOOST_CHECK(audit::matches_category(category_rule, "DML"));
+    BOOST_CHECK(audit::matches_category(category_rule, "AUTH"));
+    BOOST_CHECK(!audit::matches_category(category_rule, "DDL"));
+    BOOST_CHECK(!audit::matches_category(make_rule({"table"}), "DML"));
+
+    auto tables = table_rule({"ks.t1", "ks.*", "!(system).t"});
+    BOOST_CHECK(audit::matches_table(tables, "ks", "t1"));
+    BOOST_CHECK(audit::matches_table(tables, "ks", "anything"));
+    BOOST_CHECK(audit::matches_table(tables, "user", "t"));
+    BOOST_CHECK(!audit::matches_table(tables, "system", "t"));
+    BOOST_CHECK(!audit::matches_table(table_rule({}), "ks", "t"));
+
+    BOOST_CHECK(role_matches("admin", "admin"));
+    BOOST_CHECK(role_matches("admin_*", "admin_read"));
+    BOOST_CHECK(role_matches("user?", "user1"));
+    BOOST_CHECK(role_matches("user[0-9]", "user9"));
+    BOOST_CHECK(role_matches("admin\\*", "admin*"));
+    BOOST_CHECK(role_matches("domain\\\\user", "domain\\user"));
+    BOOST_CHECK(role_matches("@(admin|root)_*", "root_full"));
+    BOOST_CHECK(!role_matches("!(guest)", "guest"));
+    BOOST_CHECK(!role_matches("admin\\", "admin"));
+}
+
+BOOST_AUTO_TEST_CASE(test_rule_matching_and_sinks) {
+    auto rule = make_rule({"table", "syslog"}, {"DML", "AUTH"}, {"ks.t1"}, {"admin_*"});
+    BOOST_CHECK(audit::matches_rule(rule, "DML", "ks", "t1", "admin_read"));
+    BOOST_CHECK(!audit::matches_rule(rule, "DML", "ks", "t2", "admin_read"));
+    BOOST_CHECK(!audit::matches_rule(rule, "DML", "ks", "t1", "viewer"));
+
+    BOOST_CHECK(audit::matches_rule(rule, "AUTH", "", "", "admin_read"));
+    BOOST_CHECK(audit::matches_rule(rule, "AUTH", "wrong", "tbl", "admin_read"));
+
+    BOOST_CHECK(audit::matches_rule(make_rule({"table"}, {"ADMIN"}, {"ks.t1"}, {"ops"}), "ADMIN", "any", "table", "ops"));
+    BOOST_CHECK(audit::matches_rule(make_rule({"table"}, {"DCL"}, {"ks.t1"}, {"admin"}), "DCL", "", "", "admin"));
+    BOOST_CHECK(!audit::matches_rule(make_rule({"table"}), "DML", "ks", "t", "admin"));
+
+    auto sinks = audit::rule_sinks(rule);
+    BOOST_CHECK(sinks.contains(audit::audit_sink::table));
+    BOOST_CHECK(sinks.contains(audit::audit_sink::syslog));
 }
