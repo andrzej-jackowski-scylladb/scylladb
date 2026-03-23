@@ -10,12 +10,18 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <boost/program_options.hpp>
+
 #include <seastar/core/sstring.hh>
+#include <seastar/json/json_elements.hh>
 
 #include "audit/audit.hh"
 #include "audit/audit_rule.hh"
+#include "db/config.hh"
 
 using namespace seastar;
+
+namespace bpo = boost::program_options;
 
 namespace {
 
@@ -25,6 +31,12 @@ audit::audit_rule make_rule(std::vector<sstring> sinks,
                             std::vector<sstring> roles = {}) {
     return {.sinks = std::move(sinks), .categories = std::move(categories),
             .qualified_table_names = std::move(tables), .roles = std::move(roles)};
+}
+
+void throw_on_error(const sstring& opt, const sstring& msg, std::optional<utils::config_file::value_status> status) {
+    if (status != db::config::value_status::Invalid) {
+        throw std::invalid_argument(msg + " : " + opt);
+    }
 }
 
 } // anonymous namespace
@@ -89,4 +101,114 @@ BOOST_AUTO_TEST_CASE(test_json_round_trip) {
     BOOST_CHECK(parsed[1] == rules[1]);
 
     BOOST_CHECK_EQUAL(audit::audit_rules_to_json_string({}), "[]");
+}
+
+BOOST_AUTO_TEST_CASE(test_config_audit_rules_yaml_and_cql_paths) {
+    db::config cfg;
+    BOOST_CHECK(cfg.audit_rules().empty());
+
+    cfg.read_from_yaml(
+        "audit_rules:\n"
+        "  - sinks: [table]\n"
+        "    categories: [DML, DDL]\n"
+        "    qualified_table_names: [ks.t1]\n"
+        "    roles: ['admin\\*', 'domain\\\\user', 'user[0-9]', '!(guest)']\n",
+        throw_on_error);
+
+    BOOST_CHECK(cfg.audit_rules.source() == utils::config_file::config_source::SettingsFile);
+    BOOST_REQUIRE_EQUAL(cfg.audit_rules().size(), 1u);
+    BOOST_CHECK_EQUAL(cfg.audit_rules()[0].categories.size(), 2u);
+    BOOST_CHECK_EQUAL(cfg.audit_rules()[0].roles[0], "admin\\*");
+
+    auto parsed = audit::parse_audit_rules_from_json(cfg.audit_rules.value_as_json()._res);
+    BOOST_REQUIRE_EQUAL(parsed.size(), 1u);
+    BOOST_CHECK(parsed[0] == cfg.audit_rules()[0]);
+
+    std::vector<audit::audit_rule> observed;
+    auto observer = cfg.audit_rules.observe([&observed] (const std::vector<audit::audit_rule>& rules) {
+        observed = rules;
+    });
+    BOOST_CHECK(cfg.audit_rules.set_value(
+        R"([{"sinks":["syslog"],"categories":["AUTH"],"qualified_table_names":[],"roles":["*"]}])",
+        utils::config_file::config_source::CQL));
+    BOOST_CHECK(cfg.audit_rules.source() == utils::config_file::config_source::CQL);
+    BOOST_REQUIRE_EQUAL(observed.size(), 1u);
+    BOOST_CHECK_EQUAL(observed[0].sinks[0], "syslog");
+    BOOST_CHECK_EQUAL(observed[0].categories[0], "AUTH");
+
+    auto desc = cfg.get_options_description();
+    bpo::variables_map vm;
+    const char* argv[] = {"test", "--audit-rules", R"([{"sinks":["table"],"categories":["DML"],"qualified_table_names":["ks.t1"],"roles":["*"]}])"};
+    bpo::store(bpo::parse_command_line(3, argv, desc), vm);
+    bpo::notify(vm);
+    BOOST_REQUIRE_EQUAL(cfg.audit_rules().size(), 1u);
+    BOOST_CHECK_EQUAL(cfg.audit_rules()[0].qualified_table_names[0], "ks.t1");
+}
+
+BOOST_AUTO_TEST_CASE(test_config_audit_rules_rejects_invalid_values) {
+    db::config cfg;
+    BOOST_CHECK_THROW(
+        cfg.read_from_yaml(
+            "audit_rules:\n"
+            "  - sinks: [kafka]\n"
+            "    categories: [DML]\n"
+            "    qualified_table_names: []\n"
+            "    roles: []\n",
+            throw_on_error),
+        std::exception);
+
+    BOOST_CHECK_THROW(cfg.read_from_yaml(
+        "audit_rules:\n"
+        "  - categories: [DML]\n"
+        "    qualified_table_names: []\n"
+        "    roles: []\n",
+        throw_on_error), std::exception);
+    BOOST_CHECK_THROW(cfg.read_from_yaml(
+        "audit_rules:\n"
+        "  - sinks: [table]\n"
+        "    qualified_table_names: []\n"
+        "    roles: []\n",
+        throw_on_error), std::exception);
+    BOOST_CHECK_THROW(cfg.read_from_yaml(
+        "audit_rules:\n"
+        "  - sinks: [table]\n"
+        "    categories: [DML]\n"
+        "    roles: []\n",
+        throw_on_error), std::exception);
+    BOOST_CHECK_THROW(cfg.read_from_yaml(
+        "audit_rules:\n"
+        "  - sinks: [table]\n"
+        "    categories: [DML]\n"
+        "    qualified_table_names: []\n",
+        throw_on_error), std::exception);
+    BOOST_CHECK_THROW(cfg.read_from_yaml(
+        "audit_rules:\n"
+        "  - sinks: table\n"
+        "    categories: [DML]\n"
+        "    qualified_table_names: []\n"
+        "    roles: []\n",
+        throw_on_error), std::exception);
+    BOOST_CHECK_THROW(cfg.read_from_yaml(
+        "audit_rules:\n"
+        "  - sinks: [table]\n"
+        "    categories: DML\n"
+        "    qualified_table_names: []\n"
+        "    roles: []\n",
+        throw_on_error), std::exception);
+    BOOST_CHECK_THROW(cfg.read_from_yaml(
+        "audit_rules:\n"
+        "  - sinks: [table]\n"
+        "    categories: [DML]\n"
+        "    qualified_table_names: ks.t1\n"
+        "    roles: []\n",
+        throw_on_error), std::exception);
+    BOOST_CHECK_THROW(cfg.read_from_yaml(
+        "audit_rules:\n"
+        "  - sinks: [table]\n"
+        "    categories: [DML]\n"
+        "    qualified_table_names: []\n"
+        "    roles: '*'\n",
+        throw_on_error), std::exception);
+
+    BOOST_CHECK_THROW(cfg.audit_rules.set_value(sstring("{not json}"), utils::config_file::config_source::CQL), std::exception);
 }
