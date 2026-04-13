@@ -176,6 +176,42 @@ returns:
    2026-03-18 00:00:00+0000 | 10.143.2.108 | 3429b1a5-2a94-11e8-8f4e-000000000001 |      DML | LOCAL_QUORUM | False | alternator_my_table   | PutItem|{"TableName":"my_table","Item":{"p":{"S":"pk_val"}}}                     | 127.0.0.1 |   my_table | anonymous |
    (1 row)
 
+Audit Rules
+^^^^^^^^^^^^^
+
+Audit rules provide fine-grained, role-aware auditing. Each rule specifies which
+sinks, categories, table patterns, and roles it applies to. Rules are evaluated
+in addition to the legacy ``audit_categories``, ``audit_tables``, and
+``audit_keyspaces`` settings.
+
+Available categories are: ``DML``, ``DDL``, ``QUERY``, ``AUTH``, ``ADMIN``, and
+``DCL``. The ``qualified_table_names`` and ``roles`` fields support fnmatch glob
+patterns with extended syntax (``FNM_EXTMATCH``), including negation ``!(…)``,
+alternation ``@(a|b)``, and quantifiers ``+(…)``, ``*(…)``, ``?(…)``.  For
+example, ``"prod_ks.*"`` or ``"!(system).*"`` for tables and ``"admin_*"`` for
+roles. For table-independent categories (``AUTH``, ``ADMIN``, ``DCL``), the
+``qualified_table_names`` field is ignored. Each rule's sinks must be a subset of
+the global ``audit`` setting — a rule referencing a sink not enabled globally
+will log an error and events for that sink will not be written.
+
+Rules can be updated at runtime without restart via CQL::
+
+    UPDATE system.config SET value = '<json>' WHERE name = 'audit_rules';
+
+Example ``scylla.yaml`` configuration:
+
+.. code-block:: yaml
+
+   audit_rules:
+     - sinks: [table]
+       categories: [DML, DDL]
+       qualified_table_names: ["prod_ks.*"]
+       roles: ["admin_*"]
+     - sinks: [syslog]
+       categories: [AUTH]
+       qualified_table_names: []
+       roles: ["*"]
+
 Configuring Audit Storage
 ---------------------------
 
