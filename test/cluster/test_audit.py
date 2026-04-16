@@ -25,18 +25,24 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, override
 
+import aiohttp
 import pytest
 from cassandra import AlreadyExists, AuthenticationFailed, ConsistencyLevel, InvalidRequest, Unauthorized, Unavailable, WriteFailure
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.cluster import NoHostAvailable, Session, EXEC_PROFILE_DEFAULT
+from cassandra.connection import UnixSocketEndPoint
+from cassandra.policies import WhiteListRoundRobinPolicy
 from cassandra.query import SimpleStatement, named_tuple_factory
 
+from test.cluster.conftest import cluster_con
 from test.cluster.dtest.dtest_class import create_ks, wait_for
 from test.cluster.dtest.tools.assertions import assert_invalid
 from test.cluster.dtest.tools.data import rows_to_list, run_in_parallel
 
+from test.pylib.driver_utils import safe_driver_shutdown
+from test.pylib.internal_types import ServerUpState
 from test.pylib.manager_client import ManagerClient
-from test.pylib.rest_client import read_barrier
+from test.pylib.rest_client import inject_error_one_shot, read_barrier
 from test.pylib.util import wait_for as wait_for_async
 from test.pylib.scylla_cluster import ScyllaVersionDescription
 
@@ -2101,3 +2107,102 @@ async def test_upgrade_preserves_ddl_audit_for_tables(
         table=table,
         ks=keyspace,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+async def test_audit_shutdown_race_via_maintenance_socket(manager: ManagerClient) -> None:
+    """Reproducer for the shutdown race between audit and maintenance CQL.
+
+    In main.cc, the RAII destruction order during shutdown is:
+      ... audit_stop (line ~2367) ... stop_maintenance_cql (line ~2167) ...
+    Since C++ destroys in reverse declaration order, audit_stop fires
+    BEFORE stop_maintenance_cql.  This means stop_audit() destroys the
+    sharded audit instances while the maintenance CQL server may still
+    have in-flight queries inside audit::inspect().  When inspect()
+    resumes and calls local_audit_instance(), it hits
+    SEASTAR_ASSERT(local_is_initialized()) on the destroyed object and
+    the server aborts.
+
+    This test exercises the race through the maintenance CQL server:
+      1. Pause a DML query inside inspect() using an error injection.
+      2. Trigger graceful server shutdown (SIGTERM).
+      3. Wait until the maintenance CQL server drain has started.
+      4. Release the injection so the query resumes.
+      5. Verify the server shuts down cleanly (exit code 0).
+
+    Without the lifecycle fix, audit is already destroyed by step 3,
+    so step 4 causes SIGABRT.  With the fix (audit_stop declared
+    before stop_maintenance_cql so maintenance CQL drains first),
+    audit is still alive at step 4 and the query completes normally.
+    """
+
+    logger.info('Start a node with audit=syslog and audit_categories=DML')
+    cmdline = ['--logger-log-level', 'debug_error_injection=debug']
+    server = await manager.server_add(config={
+        'audit': 'syslog',
+        'audit_categories': 'DML',
+    }, cmdline=cmdline)
+
+    cql = manager.get_cql()
+    log = await manager.server_open_log(server.server_id)
+
+    ks = 'test_audit_shutdown_race_ks'
+    await cql.run_async(
+        f"CREATE KEYSPACE {ks} WITH replication = "
+        f"{{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}}")
+    await cql.run_async(
+        f"CREATE TABLE {ks}.tbl (pk int PRIMARY KEY, v int)")
+    await cql.run_async(f"INSERT INTO {ks}.tbl (pk, v) VALUES (1, 1)")
+    table = f"{ks}.tbl"
+
+    socket_path = await manager.server_get_maintenance_socket_path(
+        server.server_id)
+    endpoint = UnixSocketEndPoint(socket_path)
+    maintenance_cluster = cluster_con(
+        [endpoint],
+        load_balancing_policy=WhiteListRoundRobinPolicy([endpoint]))
+    maintenance_session = maintenance_cluster.connect()
+
+    try:
+        logger.info('Enable one-shot audit_inspect_after_info_check injection')
+        await inject_error_one_shot(
+            manager.api, server.ip_addr,
+            'audit_inspect_after_info_check')
+
+        logger.info('Send a DML query via maintenance socket -- it '
+                     'will pause inside audit::inspect()')
+        mark = await log.mark()
+        loop = asyncio.get_running_loop()
+        query_future = loop.run_in_executor(
+            None,
+            lambda: maintenance_session.execute(
+                f"SELECT * FROM {table}"))
+
+        logger.info('Wait for the injection to be hit')
+        await log.wait_for(
+            "audit_inspect_after_info_check: waiting for message",
+            from_mark=mark, timeout=60)
+
+        logger.info('Trigger graceful shutdown (SIGTERM)')
+        shutdown_task = asyncio.create_task(
+            manager.server_stop_gracefully(server.server_id))
+
+        await log.wait_for(
+            "Shutting down maintenance native server",
+            from_mark=mark, timeout=60)
+
+        logger.info('Releasing the injection')
+        try:
+            await manager.api.message_injection(
+                server.ip_addr, 'audit_inspect_after_info_check')
+        except aiohttp.ClientError:
+            logger.info('API connection lost during shutdown, '
+                        'injection message was likely delivered')
+
+        logger.info('Waiting for shutdown to complete')
+        await shutdown_task
+
+        logger.info('Server shut down cleanly -- no race detected')
+    finally:
+        safe_driver_shutdown(maintenance_cluster)
