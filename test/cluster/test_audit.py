@@ -2206,3 +2206,95 @@ async def test_audit_shutdown_race_via_maintenance_socket(manager: ManagerClient
         logger.info('Server shut down cleanly -- no race detected')
     finally:
         safe_driver_shutdown(maintenance_cluster)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+async def test_audit_not_logged_before_audit_storage_starts(manager: ManagerClient) -> None:
+    """Verify that operations executed before audit storage starts are not audited.
+
+    Audit startup is split into two phases:
+      Phase 1 (start_audit): constructs sharded audit instances (before group0).
+      Phase 2 (start_audit_storage): initializes the storage backend (after
+      join_cluster).
+
+    Between these phases, audit instances exist but storage is not ready.
+    Queries arriving in this window are dropped with an error because
+    the _storage_started flag is false.
+
+    This test:
+      1. Starts a node with audit enabled and an error injection that
+         pauses before start_audit_storage.
+      2. Connects via the maintenance CQL socket (available after
+         join_cluster, before storage starts).
+      3. Runs a query that would be audited.
+      4. Releases the injection so audit storage starts.
+      5. Runs the same query again.
+      6. Verifies that only the second query appears in the audit log.
+    """
+
+    logger.info('Add a server without starting it')
+    cmdline = ['--logger-log-level', 'debug_error_injection=debug']
+    server = await manager.server_add(start=False, config={
+        'audit': 'table',
+        'audit_categories': 'QUERY',
+        'audit_keyspaces': 'system',
+        'error_injections_at_startup': ['before_start_audit_storage'],
+    }, cmdline=cmdline)
+
+    log = await manager.server_open_log(server.server_id)
+    mark = await log.mark()
+
+    logger.info('Start the server (will block at before_start_audit_storage injection)')
+    start_task = asyncio.create_task(
+        manager.server_start(server.server_id))
+
+    logger.info('Wait for the injection to be hit')
+    await log.wait_for(
+        "before_start_audit_storage: waiting for message",
+        from_mark=mark, timeout=120)
+
+    socket_path = await manager.server_get_maintenance_socket_path(
+        server.server_id)
+    endpoint = UnixSocketEndPoint(socket_path)
+    maintenance_cluster = cluster_con(
+        [endpoint],
+        load_balancing_policy=WhiteListRoundRobinPolicy([endpoint]))
+    maintenance_session = maintenance_cluster.connect()
+
+    try:
+        logger.info('Run a query via maintenance socket before audit storage starts')
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: maintenance_session.execute(
+                "SELECT * FROM system.local"))
+
+        logger.info('Releasing before_start_audit_storage injection')
+        await manager.api.message_injection(
+            server.ip_addr, 'before_start_audit_storage')
+
+        logger.info('Waiting for server startup to finish')
+        await start_task
+
+        logger.info('Run the same query after audit has started')
+        await loop.run_in_executor(
+            None,
+            lambda: maintenance_session.execute(
+                "SELECT * FROM system.local"))
+
+        cql = manager.get_cql()
+        rows = list(cql.execute(
+            SimpleStatement(
+                "SELECT operation FROM audit.audit_log "
+                "WHERE operation = 'SELECT * FROM system.local' "
+                "ALLOW FILTERING",
+                consistency_level=ConsistencyLevel.ONE)))
+        logger.info(f'Audit log entries for our query: {len(rows)}')
+        assert len(rows) == 1, (
+            f"Expected exactly 1 audit entry (only the post-startup query), "
+            f"but found {len(rows)}")
+
+        logger.info('Test passed: pre-storage query was not audited')
+    finally:
+        safe_driver_shutdown(maintenance_cluster)

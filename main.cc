@@ -2387,6 +2387,8 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             // The table-based audit backend needs Raft (via join_cluster)
             // to create its keyspace and table.
             checkpoint(stop_signal, "starting audit storage");
+            utils::get_local_injector().inject("before_start_audit_storage",
+                utils::wait_for_message(std::chrono::seconds(60))).get();
             audit::audit::start_audit_storage(*cfg).handle_exception([&] (auto&& e) {
                 startlog.error("audit storage start failed: {}", e);
             }).get();
