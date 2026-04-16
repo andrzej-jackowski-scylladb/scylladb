@@ -29,8 +29,11 @@ import pytest
 from cassandra import AlreadyExists, AuthenticationFailed, ConsistencyLevel, InvalidRequest, Unauthorized, Unavailable, WriteFailure
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.cluster import NoHostAvailable, Session, EXEC_PROFILE_DEFAULT
+from cassandra.connection import UnixSocketEndPoint
+from cassandra.policies import WhiteListRoundRobinPolicy
 from cassandra.query import SimpleStatement, named_tuple_factory
 
+from test.cluster.conftest import cluster_con
 from test.cluster.dtest.dtest_class import create_ks, wait_for
 from test.cluster.dtest.tools.assertions import assert_invalid
 from test.cluster.dtest.tools.data import rows_to_list, run_in_parallel
@@ -1901,6 +1904,70 @@ async def test_insert_failure_standalone(manager: ManagerClient):
 async def test_service_level_statements_standalone(manager: ManagerClient):
     """audit=table, auth, cmdline=--smp 1 — standalone due to special cmdline."""
     await CQLAuditTester(manager).test_service_level_statements()
+
+
+async def test_audit_maintenance_socket_user_creation(manager: ManagerClient):
+    """Verify that creating a superuser via the maintenance socket is audited."""
+    audit_settings = {
+        "audit": "table",
+        "audit_categories": "DCL",
+        "audit_keyspaces": "",
+    }
+
+    t = CQLAuditTester(manager)
+    session = await t.prepare(
+        user="cassandra", password="cassandra",
+        helper=AuditBackendTable(),
+        audit_settings=audit_settings,
+        create_keyspace=False,
+    )
+
+    servers = await manager.running_servers()
+    server = servers[0]
+    socket_path = await manager.server_get_maintenance_socket_path(server.server_id)
+
+    logger.info("Connecting to maintenance socket")
+    endpoint = UnixSocketEndPoint(socket_path)
+    maint_cluster = cluster_con([endpoint],
+                                load_balancing_policy=WhiteListRoundRobinPolicy([endpoint]))
+    maint_session = maint_cluster.connect()
+
+    # Discover the source address that Scylla records for maintenance socket
+    # connections.  Unix domain sockets have no IP peer address, so Seastar
+    # synthesises one — typically "::" (IPv6 any) but this is not guaranteed
+    # across environments.  We run a probe query, inspect the audit log entry
+    # it produces, and reuse the recorded source for subsequent assertions.
+    probe_role = "audit_probe_role"
+    session.execute("TRUNCATE audit.audit_log")
+    maint_session.execute(f"CREATE ROLE {probe_role}")
+
+    def _get_probe_source():
+        rows = list(session.execute(
+            SimpleStatement("SELECT source, operation FROM audit.audit_log",
+                            consistency_level=ConsistencyLevel.ONE)))
+        for row in rows:
+            if probe_role in row.operation:
+                return str(row.source)
+        return None
+
+    maint_source = wait_for(_get_probe_source, timeout=60, step=0.5)
+    logger.info("Discovered maintenance socket source address: %s", maint_source)
+    maint_session.execute(f"DROP ROLE IF EXISTS {probe_role}")
+    session.execute("TRUNCATE audit.audit_log")
+
+    role_name = "audit_test_admin"
+    create_stmt = f"CREATE ROLE {role_name} WITH PASSWORD = 'secret' AND SUPERUSER = true AND LOGIN = true"
+    expected_operation = f"CREATE ROLE {role_name} WITH PASSWORD = '***' AND SUPERUSER = true AND LOGIN = true"
+
+    logger.info("Creating superuser via maintenance socket and verifying audit entry")
+    expected_entries = [AuditEntry(category="DCL", statement=expected_operation,
+                                  user="anonymous", table="", ks="", cl="LOCAL_QUORUM", error=False, source=maint_source)]
+    with t.assert_entries_were_added(session, expected_entries):
+        maint_session.execute(create_stmt)
+
+    logger.info("Cleaning up created role")
+    maint_session.execute(f"DROP ROLE IF EXISTS {role_name}")
+    maint_cluster.shutdown()
 
 
 # AuditBackendSyslog, no auth, rf=1
