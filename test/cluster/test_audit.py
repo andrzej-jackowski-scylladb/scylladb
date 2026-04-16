@@ -272,6 +272,7 @@ class AuditEntry:
     statement: str
     table: str
     user: str
+    source: str = "127.0.0.1"
 
 
 class AuditBackend:
@@ -581,6 +582,7 @@ class CQLAuditTester(AuditTester):
         user="anonymous",
         cl="ONE",
         error=False,
+        source="127.0.0.1",
     ):
         self.assert_audit_row_fields(row)
         assert row.node in self.server_addresses
@@ -589,7 +591,7 @@ class CQLAuditTester(AuditTester):
         assert row.error == error
         assert row.keyspace_name == ks
         assert row.operation == statement
-        assert row.source == "127.0.0.1"
+        assert row.source == source
         assert row.table_name == table
         assert row.username == user
 
@@ -819,7 +821,7 @@ class CQLAuditTester(AuditTester):
             sorted_new_rows = sorted(new_rows, key=lambda row: (row.node, row.category, row.consistency, row.error, row.keyspace_name, row.operation, row.source, row.table_name, row.username))
             assert len(sorted_new_rows) == len(expected_entries)
             for row, entry in zip(sorted_new_rows, sorted(expected_entries)):
-                self.assert_audit_row_eq(row, entry.category, entry.statement, entry.table, entry.ks, entry.user, entry.cl, entry.error)
+                self.assert_audit_row_eq(row, entry.category, entry.statement, entry.table, entry.ks, entry.user, entry.cl, entry.error, entry.source)
 
     async def verify_keyspace(self, audit_settings=None, helper=None):
         """
