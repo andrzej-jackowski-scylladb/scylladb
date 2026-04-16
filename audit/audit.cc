@@ -18,6 +18,7 @@
 #include "audit_composite_storage_helper.hh"
 #include "audit.hh"
 #include "../db/config.hh"
+#include "utils/error_injection.hh"
 
 #include <boost/algorithm/string/split.hpp>
 #include <boost/algorithm/string/trim.hpp>
@@ -286,12 +287,17 @@ future<> inspect(shared_ptr<cql3::cql_statement> statement, service::query_state
         return do_for_each(batch->statements().begin(), batch->statements().end(), [&query_state, &options, error] (auto&& m) {
             return inspect(m.statement, query_state, options, error);
         });
-    } else {
+    }
+    return utils::get_local_injector().inject(
+        "audit_inspect_after_info_check",
+        utils::wait_for_message(std::chrono::seconds(60)))
+    .then([statement = std::move(statement), &query_state, &options, error] {
+        auto audit_info = statement->get_audit_info();
         if (audit::local_audit_instance().should_log(audit_info)) {
             return audit::local_audit_instance().log(audit_info, query_state, options, error);
         }
         return make_ready_future<>();
-    }
+    });
 }
 
 future<> inspect_login(const sstring& username, socket_address client_ip, bool error) {
