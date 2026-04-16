@@ -272,6 +272,7 @@ class AuditEntry:
     statement: str
     table: str
     user: str
+    source: str = "127.0.0.1"
 
 
 class AuditBackend:
@@ -581,6 +582,7 @@ class CQLAuditTester(AuditTester):
         user="anonymous",
         cl="ONE",
         error=False,
+        source="127.0.0.1",
     ):
         self.assert_audit_row_fields(row)
         assert row.node in self.server_addresses
@@ -589,7 +591,7 @@ class CQLAuditTester(AuditTester):
         assert row.error == error
         assert row.keyspace_name == ks
         assert row.operation == statement
-        assert row.source == "127.0.0.1"
+        assert row.source == source
         assert row.table_name == table
         assert row.username == user
 
@@ -819,7 +821,7 @@ class CQLAuditTester(AuditTester):
             sorted_new_rows = sorted(new_rows, key=lambda row: (row.node, row.category, row.consistency, row.error, row.keyspace_name, row.operation, row.source, row.table_name, row.username))
             assert len(sorted_new_rows) == len(expected_entries)
             for row, entry in zip(sorted_new_rows, sorted(expected_entries)):
-                self.assert_audit_row_eq(row, entry.category, entry.statement, entry.table, entry.ks, entry.user, entry.cl, entry.error)
+                self.assert_audit_row_eq(row, entry.category, entry.statement, entry.table, entry.ks, entry.user, entry.cl, entry.error, entry.source)
 
     async def verify_keyspace(self, audit_settings=None, helper=None):
         """
@@ -1899,6 +1901,51 @@ async def test_insert_failure_standalone(manager: ManagerClient):
 async def test_service_level_statements_standalone(manager: ManagerClient):
     """audit=table, auth, cmdline=--smp 1 — standalone due to special cmdline."""
     await CQLAuditTester(manager).test_service_level_statements()
+
+
+async def test_audit_maintenance_socket_user_creation(manager: ManagerClient):
+    """Verify that creating a superuser via the maintenance socket is audited."""
+    from cassandra.connection import UnixSocketEndPoint
+    from cassandra.policies import WhiteListRoundRobinPolicy
+    from test.cluster.conftest import cluster_con
+
+    audit_settings = {
+        "audit": "table",
+        "audit_categories": "DCL",
+        "audit_keyspaces": "",
+    }
+
+    t = CQLAuditTester(manager)
+    session = await t.prepare(
+        user="cassandra", password="cassandra",
+        helper=AuditBackendTable(),
+        audit_settings=audit_settings,
+        create_keyspace=False,
+    )
+
+    servers = await manager.running_servers()
+    server = servers[0]
+    socket_path = await manager.server_get_maintenance_socket_path(server.server_id)
+
+    logger.info("Connecting to maintenance socket")
+    endpoint = UnixSocketEndPoint(socket_path)
+    maint_cluster = cluster_con([endpoint],
+                                load_balancing_policy=WhiteListRoundRobinPolicy([endpoint]))
+    maint_session = maint_cluster.connect()
+
+    role_name = "audit_test_admin"
+    create_stmt = f"CREATE ROLE {role_name} WITH PASSWORD = 'secret' AND SUPERUSER = true AND LOGIN = true"
+    expected_operation = f"CREATE ROLE {role_name} WITH PASSWORD = '***' AND SUPERUSER = true AND LOGIN = true"
+
+    logger.info("Creating superuser via maintenance socket and verifying audit entry")
+    expected_entries = [AuditEntry(category="DCL", statement=expected_operation,
+                                  user="anonymous", table="", ks="", cl="LOCAL_QUORUM", error=False, source="::")]
+    with t.assert_entries_were_added(session, expected_entries):
+        maint_session.execute(create_stmt)
+
+    logger.info("Cleaning up created role")
+    maint_session.execute(f"DROP ROLE IF EXISTS {role_name}")
+    maint_cluster.shutdown()
 
 
 # AuditBackendSyslog, no auth, rf=1
