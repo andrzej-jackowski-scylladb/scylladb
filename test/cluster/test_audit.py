@@ -2208,3 +2208,83 @@ async def test_audit_shutdown_race_via_maintenance_socket(manager: ManagerClient
         logger.info('Server shut down cleanly -- no race detected')
     finally:
         safe_driver_shutdown(maintenance_cluster)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+async def test_audit_maintenance_socket_not_available_before_audit_storage(manager: ManagerClient) -> None:
+    """Verify that the maintenance socket is not available before audit
+    storage starts, ensuring all queries on it are always audited.
+    """
+
+    logger.info('Add a server without starting it')
+    cmdline = ['--logger-log-level', 'debug_error_injection=debug']
+    server = await manager.server_add(start=False, config={
+        'audit': 'table',
+        'audit_categories': 'QUERY',
+        'audit_keyspaces': 'system',
+        'error_injections_at_startup': ['before_start_audit_storage'],
+    }, cmdline=cmdline)
+
+    log = await manager.server_open_log(server.server_id)
+    mark = await log.mark()
+
+    logger.info('Start the server (will block at before_start_audit_storage injection)')
+    start_task = asyncio.create_task(
+        manager.server_start(server.server_id))
+
+    logger.info('Wait for the injection to be hit')
+    await log.wait_for(
+        "before_start_audit_storage: waiting for message",
+        from_mark=mark, timeout=120)
+
+    socket_path = await manager.server_get_maintenance_socket_path(
+        server.server_id)
+
+    logger.info('Verify maintenance socket is not yet accepting connections')
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(socket_path)
+        assert False, (
+            "Maintenance socket accepted a connection before audit storage "
+            "started -- queries in this window would bypass auditing")
+    except (ConnectionRefusedError, FileNotFoundError):
+        logger.info('Connection correctly refused -- socket not yet open')
+    finally:
+        sock.close()
+
+    logger.info('Releasing before_start_audit_storage injection')
+    await manager.api.message_injection(
+        server.ip_addr, 'before_start_audit_storage')
+
+    logger.info('Waiting for server startup to finish')
+    await start_task
+
+    endpoint = UnixSocketEndPoint(socket_path)
+    maintenance_cluster = cluster_con(
+        [endpoint],
+        load_balancing_policy=WhiteListRoundRobinPolicy([endpoint]))
+    maintenance_session = maintenance_cluster.connect()
+
+    try:
+        logger.info('Run a query via maintenance socket after audit storage started')
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: maintenance_session.execute(
+                "SELECT * FROM system.local"))
+
+        cql = manager.get_cql()
+        rows = list(cql.execute(
+            SimpleStatement(
+                "SELECT operation FROM audit.audit_log "
+                "WHERE operation = 'SELECT * FROM system.local' "
+                "ALLOW FILTERING",
+                consistency_level=ConsistencyLevel.ONE)))
+        logger.info(f'Audit log entries for our query: {len(rows)}')
+        assert len(rows) == 1, (
+            f"Expected exactly 1 audit entry, but found {len(rows)}")
+
+        logger.info('Test passed: maintenance socket only available after audit storage')
+    finally:
+        safe_driver_shutdown(maintenance_cluster)
