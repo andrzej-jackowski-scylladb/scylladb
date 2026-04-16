@@ -2349,15 +2349,6 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             }).get();
             stop_signal.ready(false);
 
-            if (cfg->maintenance_socket() != "ignore") {
-                // Enable role operations now that node joined the cluster
-                maintenance_auth_service.invoke_on_all([](auth::service& svc) {
-                    return auth::ensure_role_operations_are_enabled(svc);
-                }).get();
-
-                start_cql(*cql_maintenance_server_ctl, stop_maintenance_cql, "maintenance native server");
-            }
-
             // At this point, `locator::topology` should be stable, i.e. we should have complete information
             // about the layout of the cluster (= list of nodes along with the racks/DCs).
             startlog.info("Verifying that all of the keyspaces are RF-rack-valid");
@@ -2366,15 +2357,21 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             startlog.info("Verifying that all of the tablet keyspaces use rack list replication factors");
             db.local().check_rack_list_everywhere(cfg->enforce_rack_list());
 
-            // Audit service phase 2: initialize storage backend.
-            // The table-based audit backend needs Raft (via join_cluster)
-            // to create its keyspace and table.
             checkpoint(stop_signal, "starting audit storage");
             utils::get_local_injector().inject("before_start_audit_storage",
                 utils::wait_for_message(std::chrono::seconds(60))).get();
             audit::audit::start_audit_storage(*cfg).handle_exception([&] (auto&& e) {
                 startlog.error("audit storage start failed: {}", e);
             }).get();
+
+            if (cfg->maintenance_socket() != "ignore") {
+                // Enable role operations now that node joined the cluster
+                maintenance_auth_service.invoke_on_all([](auth::service& svc) {
+                    return auth::ensure_role_operations_are_enabled(svc);
+                }).get();
+
+                start_cql(*cql_maintenance_server_ctl, stop_maintenance_cql, "maintenance native server");
+            }
 
             // Semantic validation of sstable compression parameters from config.
             // Adding here (i.e., after `join_cluster`) to ensure that the
