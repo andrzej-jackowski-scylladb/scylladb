@@ -2358,8 +2358,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             startlog.info("Verifying that all of the tablet keyspaces use rack list replication factors");
             db.local().check_rack_list_everywhere(cfg->enforce_rack_list());
 
-            // Start audit service after join_cluster so that the table-based audit backend
-            // can properly create its keyspace and table.
+            // Start audit service (phase 1: construction).
             checkpoint(stop_signal, "starting audit service");
             audit::audit::start_audit(*cfg, token_metadata, qp, mm).handle_exception([&] (auto&& e) {
                 startlog.error("audit start failed: {}", e);
@@ -2367,6 +2366,16 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             auto audit_stop = defer([] {
                 audit::audit::stop_audit().get();
             });
+
+            // Audit service phase 2: initialize storage backend.
+            // The table-based audit backend needs Raft (via join_cluster)
+            // to create its keyspace and table.
+            checkpoint(stop_signal, "starting audit storage");
+            utils::get_local_injector().inject("before_start_audit_storage",
+                utils::wait_for_message(std::chrono::seconds(60))).get();
+            audit::audit::start_audit_storage(*cfg).handle_exception([&] (auto&& e) {
+                startlog.error("audit storage start failed: {}", e);
+            }).get();
 
             // Semantic validation of sstable compression parameters from config.
             // Adding here (i.e., after `join_cluster`) to ensure that the
