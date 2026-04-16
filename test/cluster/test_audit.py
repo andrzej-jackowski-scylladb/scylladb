@@ -2270,6 +2270,11 @@ async def test_audit_not_logged_before_audit_storage_starts(manager: ManagerClie
             lambda: maintenance_session.execute(
                 "SELECT * FROM system.local"))
 
+        logger.info('Verify that an error was logged for the dropped audit entry')
+        await log.wait_for(
+            "Audit log dropped \\(storage not ready\\).*SELECT \\* FROM system.local",
+            from_mark=mark, timeout=10)
+
         logger.info('Releasing before_start_audit_storage injection')
         await manager.api.message_injection(
             server.ip_addr, 'before_start_audit_storage')
