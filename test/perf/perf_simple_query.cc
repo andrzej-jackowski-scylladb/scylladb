@@ -371,6 +371,9 @@ int scylla_simple_query_main(int argc, char** argv) {
             audit::audit::start_audit(env.local_db().get_config(), env.get_shared_token_metadata(), env.qp(), env.migration_manager()).handle_exception([&] (auto&& e) {
                 fmt::print("audit start failed: {}", e);
             }).get();
+            audit::audit::start_audit_storage(env.local_db().get_config()).handle_exception([&] (auto&& e) {
+                fmt::print("audit storage start failed: {}", e);
+            }).get();
             auto audit_stop = defer([] {
                 audit::audit::stop_audit().get();
             });

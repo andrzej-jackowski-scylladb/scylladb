@@ -187,14 +187,15 @@ future<> audit::start_audit(const db::config& cfg, sharded<locator::shared_token
                                   std::move(audited_keyspaces),
                                   std::move(audited_tables),
                                   std::move(audited_categories),
-                                  std::cref(cfg))
-    .then([&cfg] {
-        if (!audit_instance().local_is_initialized()) {
-            return make_ready_future<>();
-        }
-        return audit_instance().invoke_on_all([&cfg] (audit& local_audit) {
-            return local_audit.start(cfg);
-        });
+                                  std::cref(cfg));
+}
+
+future<> audit::start_audit_storage(const db::config& cfg) {
+    if (!audit_instance().local_is_initialized()) {
+        return make_ready_future<>();
+    }
+    return audit_instance().invoke_on_all([&cfg] (audit& local_audit) {
+        return local_audit.start_storage(cfg);
     });
 }
 
@@ -216,8 +217,10 @@ audit_info_ptr audit::create_audit_info(statement_category cat, const sstring& k
     return std::make_unique<audit_info>(cat, keyspace, table, batch);
 }
 
-future<> audit::start(const db::config& cfg) {
-    return _storage_helper_ptr->start(cfg);
+future<> audit::start_storage(const db::config& cfg) {
+    return _storage_helper_ptr->start(cfg).then([this] {
+        _storage_started = true;
+    });
 }
 
 future<> audit::stop() {
@@ -236,6 +239,12 @@ future<> audit::log(const audit_info* audit_info, service::query_state& query_st
     static const sstring anonymous_username("anonymous");
     const sstring& username = client_state.user() ? client_state.user()->name.value_or(anonymous_username) : no_username;
     socket_address client_ip = client_state.get_client_address().addr();
+    if (!_storage_started) {
+        logger.error("Audit log dropped (storage not ready): node_ip {} category {} cl {} error {} keyspace {} query '{}' client_ip {} table {} username {}",
+            node_ip, audit_info->category_string(), cl, error, audit_info->keyspace(),
+            audit_info->query(), client_ip, audit_info->table(), username);
+        return make_ready_future<>();
+    }
     if (logger.is_enabled(logging::log_level::debug)) {
         logger.debug("Log written: node_ip {} category {} cl {} error {} keyspace {} query '{}' client_ip {} table {} username {}",
             node_ip, audit_info->category_string(), cl, error, audit_info->keyspace(),
@@ -251,6 +260,11 @@ future<> audit::log(const audit_info* audit_info, service::query_state& query_st
 
 future<> audit::log_login(const sstring& username, socket_address client_ip, bool error) noexcept {
     socket_address node_ip = _token_metadata.get()->get_topology().my_address().addr();
+    if (!_storage_started) {
+        logger.error("Audit login log dropped (storage not ready): node_ip {} client_ip {} username {} error {}",
+            node_ip, client_ip, username, error ? "true" : "false");
+        return make_ready_future<>();
+    }
     if (logger.is_enabled(logging::log_level::debug)) {
         logger.debug("Login log written: node_ip {}, client_ip {}, username {}, error {}",
             node_ip, client_ip, username, error ? "true" : "false");

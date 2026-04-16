@@ -1806,6 +1806,22 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
                 mm.stop().get();
             });
 
+            // Start audit service (phase 1: construction) as early as
+            // possible so that any CQL path that calls audit::inspect()
+            // hits the _storage_started guard and logs an error, rather
+            // than silently skipping because the service doesn't exist.
+            //
+            // Phase 2 (start_audit_storage) runs later, after join_cluster,
+            // so that the table-based audit backend can create its keyspace
+            // and table via Raft.
+            checkpoint(stop_signal, "starting audit service");
+            audit::audit::start_audit(*cfg, token_metadata, qp, mm).handle_exception([&] (auto&& e) {
+                startlog.error("audit start failed: {}", e);
+            }).get();
+            auto early_audit_stop = defer([] {
+                audit::audit::stop_audit().get();
+            });
+
             utils::get_local_injector().inject("stop_after_starting_migration_manager",
                 [] { std::raise(SIGSTOP); });
 
@@ -2162,6 +2178,14 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
                 });
             };
 
+            // Transfer audit shutdown responsibility from the early guard
+            // to this position, so that audit outlives the maintenance CQL
+            // server during shutdown — RAII destroys in reverse declaration
+            // order, so the maintenance CQL server is drained first
+            // (completing any in-flight queries that call audit::inspect()),
+            // then audit is destroyed.
+            auto audit_stop = std::move(early_audit_stop);
+
             std::optional<cql_transport::controller> cql_maintenance_server_ctl;
             std::any stop_maintenance_auth_service;
             std::any stop_maintenance_cql;
@@ -2261,6 +2285,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
              */
             db.local().enable_autocompaction_toggle();
 
+
             checkpoint(stop_signal, "starting group 0 service");
             group0_service.start().get();
             auto stop_group0_service = defer_verbose_shutdown("group 0 service", [&group0_service] {
@@ -2358,15 +2383,13 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             startlog.info("Verifying that all of the tablet keyspaces use rack list replication factors");
             db.local().check_rack_list_everywhere(cfg->enforce_rack_list());
 
-            // Start audit service after join_cluster so that the table-based audit backend
-            // can properly create its keyspace and table.
-            checkpoint(stop_signal, "starting audit service");
-            audit::audit::start_audit(*cfg, token_metadata, qp, mm).handle_exception([&] (auto&& e) {
-                startlog.error("audit start failed: {}", e);
+            // Audit service phase 2: initialize storage backend.
+            // The table-based audit backend needs Raft (via join_cluster)
+            // to create its keyspace and table.
+            checkpoint(stop_signal, "starting audit storage");
+            audit::audit::start_audit_storage(*cfg).handle_exception([&] (auto&& e) {
+                startlog.error("audit storage start failed: {}", e);
             }).get();
-            auto audit_stop = defer([] {
-                audit::audit::stop_audit().get();
-            });
 
             // Semantic validation of sstable compression parameters from config.
             // Adding here (i.e., after `join_cluster`) to ensure that the
