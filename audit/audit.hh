@@ -12,7 +12,11 @@
 #include "utils/observable.hh"
 #include "service/client_state.hh"
 #include "db/consistency_level_type.hh"
+#include "utils/serialized_action.hh"
+#include "db/consistency_level.hh"
+#include "locator/token_metadata_fwd.hh"
 #include "audit/audit_rule.hh"
+#include "audit/preprocessed_audit_rules.hh"
 #include <seastar/core/sharded.hh>
 #include <seastar/util/log.hh>
 
@@ -38,6 +42,7 @@ class query_options;
 namespace service {
 
 class migration_manager;
+class migration_notifier;
 class query_state;
 
 }
@@ -135,6 +140,7 @@ public:
 sstring category_to_string(statement_category category);
 
 class storage_helper;
+class audit_schema_listener;
 
 class audit final : public seastar::async_sharded_service<audit> {
 public:
@@ -149,21 +155,27 @@ private:
     category_set _audited_categories;
 
     audit_sink_set _audit_sinks;
+    preprocessed_audit_rules _preprocessed_rules;
 
     std::unique_ptr<storage_helper> _storage_helper_ptr;
     bool _storage_running = false;
+    std::unique_ptr<audit_schema_listener> _schema_listener;
+    service::migration_notifier& _migration_notifier;
 
     const db::config& _cfg;
     utils::observer<sstring> _cfg_keyspaces_observer;
     utils::observer<sstring> _cfg_tables_observer;
     utils::observer<sstring> _cfg_categories_observer;
+    serialized_action _rules_rebuild_action;
+    std::optional<utils::observer<std::vector<audit_rule>>> _cfg_rules_observer;
 
     template<class T>
     void update_config(const sstring & new_value, std::function<T(const sstring&)> parse_func, T& cfg_parameter);
 
     bool should_log_table(std::string_view keyspace, std::string_view name) const;
+    bool rules_may_log(statement_category cat, std::string_view keyspace, std::string_view table) const;
     audit_sink_set sinks_for(const audit_info& audit_info) const;
-    audit_sink_set sinks_for_login() const;
+    audit_sink_set sinks_for_login(const sstring& username) const;
 public:
     static seastar::sharded<audit>& audit_instance() {
         // FIXME: leaked intentionally to avoid shutdown problems, see #293
@@ -187,14 +199,23 @@ public:
           audited_keyspaces_t&& audited_keyspaces,
           audited_tables_t&& audited_tables,
           category_set&& audited_categories,
+          std::vector<audit_rule>&& audit_rules,
           const db::config& cfg);
     ~audit();
     future<> shutdown();
     bool should_log(const audit_info& audit_info) const;
     bool will_log(statement_category cat, std::string_view keyspace = {}, std::string_view table = {}) const;
-    bool should_log_login() const { return _audited_categories.contains(statement_category::AUTH); }
+    bool should_log_login(const sstring& username) const;
     future<> log(const audit_info& audit_info, const service::client_state& client_state, std::optional<db::consistency_level> cl, bool error);
-    future<> log_login(const sstring& username, socket_address client_ip, bool error) noexcept;
+    future<> log_login(const sstring& username, socket_address client_ip, bool error);
+
+    void on_role_created(const sstring& role);
+    void on_role_dropped(const sstring& role);
+
+    /// Bulk-load known roles and tables and rebuild the cache with yielding
+    /// to avoid reactor stalls when the cross-product is large.
+    future<> set_known_entities(std::unordered_set<sstring> roles,
+                                preprocessed_audit_rules::known_table_set tables);
 };
 
 future<> inspect(audit_info_alternator& audit_info, const service::client_state& client_state, bool error);
