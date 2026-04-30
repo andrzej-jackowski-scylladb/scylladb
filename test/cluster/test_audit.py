@@ -2110,6 +2110,70 @@ class CQLAuditTester(AuditTester):
             session.execute("INSERT INTO rules_update_ks.tbl_b (id, v) VALUES (4, 'b4')")
             session.execute("INSERT INTO rules_update_ks.tbl_c (id, v) VALUES (2, 'c2')")
 
+    async def _test_audit_rules_cache_notifications(self):
+        """Verify that role and schema changes update audit rule caches."""
+        rules = [
+            {
+                "sinks": ["table"],
+                "categories": ["DML"],
+                "qualified_table_names": ["notify_ks.*"],
+                "roles": ["cassandra"],
+            }
+        ]
+        session = await self.prepare(user="cassandra", password="cassandra", audit_settings={
+            "audit": "table",
+            "audit_categories": "",
+            "audit_keyspaces": "",
+            "audit_tables": "",
+            "audit_rules": rules,
+        }, create_keyspace=False, rf=2)
+        logs = [await self.manager.server_open_log(srv.server_id) for srv in await self.manager.running_servers()]
+
+        logger.info("Creating audit_reader and waiting for audit cache notifications")
+        marks = [await log.mark() for log in logs]
+        session.execute("CREATE ROLE audit_reader")
+        for log, mark in zip(logs, marks):
+            await log.wait_for("Audit: known role added: audit_reader", from_mark=mark, timeout=30)
+
+        logger.info("Altering audit_reader and waiting for audit cache notifications")
+        marks = [await log.mark() for log in logs]
+        session.execute("ALTER ROLE audit_reader WITH PASSWORD = 'newpass'")
+        for log, mark in zip(logs, marks):
+            await log.wait_for("Audit: known role added: audit_reader", from_mark=mark, timeout=30)
+
+        session.execute(
+            "CREATE KEYSPACE IF NOT EXISTS notify_ks "
+            "WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 2}"
+            " AND tablets = {'enabled': false}"
+        )
+
+        logger.info("Creating matching table and waiting for audit table cache notifications")
+        marks = [await log.mark() for log in logs]
+        session.execute("CREATE TABLE notify_ks.audited_tbl (id int PRIMARY KEY, v text)")
+        for log, mark in zip(logs, marks):
+            await log.wait_for("Audit: table notify_ks.audited_tbl created, adding to known tables", from_mark=mark, timeout=30)
+
+        self.execute_and_validate_new_audit_entry(
+            session,
+            "INSERT INTO notify_ks.audited_tbl (id, v) VALUES (1, 'test')",
+            category="DML",
+            table="audited_tbl",
+            ks="notify_ks",
+            user="cassandra",
+        )
+
+        logger.info("Dropping matching table and waiting for audit table cache notifications")
+        marks = [await log.mark() for log in logs]
+        session.execute("DROP TABLE notify_ks.audited_tbl")
+        for log, mark in zip(logs, marks):
+            await log.wait_for("Audit: table notify_ks.audited_tbl dropped, removing from known tables", from_mark=mark, timeout=30)
+
+        logger.info("Dropping audit_reader and waiting for audit cache notifications")
+        marks = [await log.mark() for log in logs]
+        session.execute("DROP ROLE audit_reader")
+        for log, mark in zip(logs, marks):
+            await log.wait_for("Audit: known role removed: audit_reader", from_mark=mark, timeout=30)
+
     async def _test_audit_rules_sink_mismatch_warning(self):
         """Verify that rule sinks must be enabled by the global audit config."""
         rules = [
@@ -2403,6 +2467,11 @@ async def test_audit_rules_targeted_auth(manager: ManagerClient):
 async def test_audit_rules_liveupdate(manager: ManagerClient):
     """audit_rules can be live-updated."""
     await CQLAuditTester(manager)._test_audit_rules_liveupdate()
+
+
+async def test_audit_rules_cache_notifications(manager: ManagerClient):
+    """Role and schema changes update audit rule caches."""
+    await CQLAuditTester(manager)._test_audit_rules_cache_notifications()
 
 
 async def test_audit_rules_sink_mismatch_warning(manager: ManagerClient):
