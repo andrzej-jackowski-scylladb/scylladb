@@ -53,7 +53,7 @@ syslog_socket_path = tempfile.mktemp(prefix="/tmp/scylla-audit-", suffix=".socke
 # Keys that require server restart (not live-updatable).
 NON_LIVE_AUDIT_KEYS = {"audit", "audit_unix_socket_path"}
 # Keys that can be updated via SIGHUP (live-updatable).
-LIVE_AUDIT_KEYS = {"audit_categories", "audit_keyspaces", "audit_tables"}
+LIVE_AUDIT_KEYS = {"audit_categories", "audit_keyspaces", "audit_tables", "audit_rules"}
 # Auth config applied when user/password are requested.
 AUTH_CONFIG = {
     "authenticator": "org.apache.cassandra.auth.PasswordAuthenticator",
@@ -1906,6 +1906,91 @@ class CQLAuditTester(AuditTester):
             maint_session.execute(f"DROP ROLE IF EXISTS {role_name}")
             safe_driver_shutdown(maint_cluster)
 
+    async def _test_audit_rules_targeted(self):
+        """Verify rule matching, non-matches, and audit_categories/audit_keyspaces coexistence."""
+        rules = [
+            {
+                "sinks": ["table"],
+                "categories": [],
+                "qualified_table_names": ["ks.ignored_tbl"],
+                "roles": ["*"],
+            },
+            {
+                "sinks": ["table"],
+                "categories": ["DML"],
+                "qualified_table_names": ["ks.ignored_tbl"],
+                "roles": [],
+            },
+            {
+                "sinks": ["table"],
+                "categories": ["DML"],
+                "qualified_table_names": ["ks.rules_tbl"],
+                "roles": ["*"],
+            },
+        ]
+        audit_settings = {
+            "audit": "table",
+            "audit_categories": "DDL",
+            "audit_keyspaces": "ks",
+            "audit_tables": "",
+            "audit_rules": rules,
+        }
+        session = await self.prepare(audit_settings=audit_settings)
+
+        logger.info("Verifying DDL on ks is audited by audit_categories")
+        self.execute_and_validate_new_audit_entry(
+            session, "CREATE TABLE rules_tbl (id int PRIMARY KEY, v text)",
+            category="DDL", table="rules_tbl", ks="ks")
+        self.execute_and_validate_new_audit_entry(
+            session, "CREATE TABLE other_tbl (id int PRIMARY KEY, v text)",
+            category="DDL", table="other_tbl", ks="ks")
+        self.execute_and_validate_new_audit_entry(
+            session, "CREATE TABLE ignored_tbl (id int PRIMARY KEY, v text)",
+            category="DDL", table="ignored_tbl", ks="ks")
+
+        logger.info("Verifying DML on rules_tbl is audited by rules path")
+        self.execute_and_validate_new_audit_entry(
+            session, "INSERT INTO rules_tbl (id, v) VALUES (1, 'hello')",
+            category="DML", table="rules_tbl", ks="ks")
+
+        logger.info("Verifying DML on other_tbl and ignored_tbl is NOT audited")
+        session.execute("INSERT INTO ks.other_tbl (id, v) VALUES (1, 'hello')")
+        session.execute("INSERT INTO ks.ignored_tbl (id, v) VALUES (1, 'ignored')")
+        logger.info("Flushing audit pipeline with a known-auditable statement")
+        expected = [AuditEntry(category="DML", cl="ONE", error=False, ks="ks",
+                               statement="INSERT INTO ks.rules_tbl (id, v) VALUES (2, 'fence')",
+                               table="rules_tbl", user="anonymous")]
+        with self.assert_entries_were_added(session, expected):
+            session.execute("INSERT INTO ks.rules_tbl (id, v) VALUES (2, 'fence')")
+
+    async def _test_audit_rules_auth_with_empty_tables(self):
+        """Verify that AUTH category works with empty qualified_table_names."""
+        rules = [
+            {
+                "sinks": ["table"],
+                "categories": ["AUTH"],
+                "qualified_table_names": [],
+                "roles": ["*"],
+            }
+        ]
+        audit_settings = {
+            "audit": "table",
+            "audit_categories": "",
+            "audit_keyspaces": "",
+            "audit_tables": "",
+            "audit_rules": rules,
+        }
+        session = await self.prepare(
+            user="cassandra", password="cassandra",
+            audit_settings=audit_settings, create_keyspace=False)
+
+        logger.info("Opening a fresh connection to generate a fresh AUTH entry")
+        auth_provider = PlainTextAuthProvider(username="cassandra", password="cassandra")
+        expected_entry = AuditEntry(category="AUTH", statement="LOGIN", table="", ks="", user="cassandra", cl="", error=False)
+        with self.assert_entries_were_added(session, [expected_entry], filter_out_cassandra_auth=False):
+            servers = await self.manager.running_servers()
+            await self.manager.get_cql_exclusive(servers[0], auth_provider=auth_provider)
+
 # AuditBackendTable, no auth, rf=1
 
 async def test_audit_table_noauth(manager: ManagerClient):
@@ -2160,3 +2245,13 @@ async def test_upgrade_preserves_ddl_audit_for_tables(
         table=table,
         ks=keyspace,
     )
+
+
+async def test_audit_rules_targeted(manager: ManagerClient):
+    """Tests for audit_rules behaviors not expressible with audit_categories/audit_keyspaces/audit_tables."""
+    await CQLAuditTester(manager)._test_audit_rules_targeted()
+
+
+async def test_audit_rules_targeted_auth(manager: ManagerClient):
+    """AUTH category with empty qualified_table_names."""
+    await CQLAuditTester(manager)._test_audit_rules_auth_with_empty_tables()
