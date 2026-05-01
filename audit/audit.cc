@@ -432,7 +432,7 @@ audit_sink_set audit::sinks_for(const audit_info& audit_info) const {
 
     if (!_preprocessed_rules.rules().empty()) {
         result.add(_preprocessed_rules.matching_sinks(audit_info.category_string(),
-                                                       audit_info.keyspace(), audit_info.table(),
+                                                       audit_info.rule_keyspace(), audit_info.rule_table(),
                                                        audit_info.role()));
     }
     return result;

@@ -6,6 +6,7 @@
 # Audit is a Scylla-only feature, so every test in this file is
 # Scylla-only (will be skipped when running against AWS DynamoDB).
 
+import json
 import time
 
 from botocore.exceptions import ClientError
@@ -175,7 +176,7 @@ def _strip_config_quotes(val):
 @pytest.fixture(scope="function")
 def alternator_audit_enabled(cql):
     # Store current values of audit config keys in the system.config table
-    names = ("audit_categories", "audit_keyspaces", "audit_tables")
+    names = ("audit_categories", "audit_keyspaces", "audit_tables", "audit_rules")
     names_in_clause = ", ".join(f"'{n}'" for n in names)
     rows = cql.execute(f"SELECT name, value FROM system.config WHERE name IN ({names_in_clause})")
     original_config_vals = {row.name: row.value for row in rows}
@@ -270,6 +271,18 @@ def test_audit_dml_batch_operations(dynamodb, cql, alternator_audit_enabled):
         new_rows = _get_new_audit_log_rows(cql, before_rows, expected_new_row_count=len(expected))
         _assert_audit_entries(new_rows, expected, table_name=table.name)
 
+        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", ("",))
+        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_categories'", ("",))
+        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_rules'", (json.dumps([{
+            "sinks": ["table"], "categories": ["DML"],
+            "qualified_table_names": [f"{ks_name}.{table.name}"], "roles": ["*"]}]),))
+        before_rows = _get_audit_log_rows(cql)
+        client.batch_write_item(RequestItems={
+            table.name: [{"PutRequest": {"Item": {"p": "pk_rule", "v": "val_rule"}}}]
+        })
+        new_rows = _get_new_audit_log_rows(cql, before_rows, expected_new_row_count=1)
+        _assert_audit_entries(new_rows, [("DML", "LOCAL_QUORUM", False, "", table.name, ["BatchWriteItem", "pk_rule", "val_rule"])], table_name=table.name)
+
 
 # Test auditing of QUERY item operations: GetItem, Query, Scan.
 # Exercises both ConsistentRead=True (LOCAL_QUORUM) and False (LOCAL_ONE),
@@ -349,6 +362,16 @@ def test_audit_query_batch_operations(dynamodb, cql, alternator_audit_enabled):
         # Each individual Alternator call above must be audited.
         new_rows = _get_new_audit_log_rows(cql, before_rows, expected_new_row_count=len(expected))
         _assert_audit_entries(new_rows, expected, table_name=table.name)
+
+        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", ("",))
+        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_categories'", ("",))
+        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_rules'", (json.dumps([{
+            "sinks": ["table"], "categories": ["QUERY"],
+            "qualified_table_names": [f"{ks_name}.{table.name}"], "roles": ["*"]}]),))
+        before_rows = _get_audit_log_rows(cql)
+        client.batch_get_item(RequestItems={table.name: {"Keys": [{"p": "pk_0"}]}})
+        new_rows = _get_new_audit_log_rows(cql, before_rows, expected_new_row_count=1)
+        _assert_audit_entries(new_rows, [("QUERY", "ANY", False, "", table.name, ["BatchGetItem", "pk_0"])], table_name=table.name)
 
 
 # Test auditing of DDL operations: CreateTable, UpdateTable (with GSI),
