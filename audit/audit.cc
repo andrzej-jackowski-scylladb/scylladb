@@ -9,6 +9,7 @@
 #include <seastar/core/future-util.hh>
 #include "audit/audit.hh"
 #include "audit/audit_rule.hh"
+#include "audit/preprocessed_audit_rules.hh"
 #include "db/config.hh"
 #include "cql3/cql_statement.hh"
 #include "cql3/statements/batch_statement.hh"
@@ -52,6 +53,20 @@ static audit_sink_set parse_audit_sinks(const sstring& data) {
         }
     }
     return result;
+}
+
+static void warn_on_sink_mismatch(const std::vector<audit_rule>& rules, audit_sink_set enabled_sinks) {
+    for (size_t i = 0; i < rules.size(); ++i) {
+        for (const auto& sink_name : rules[i].sinks) {
+            bool supported = (sink_name == "table" && enabled_sinks.contains(audit_sink::table))
+                          || (sink_name == "syslog" && enabled_sinks.contains(audit_sink::syslog));
+            if (!supported) {
+                logger.error("Audit rule {} references sink '{}' but the global 'audit' config does not enable it. "
+                             "Events matching this rule will not be written to '{}'.",
+                             i, sink_name, sink_name);
+            }
+        }
+    }
 }
 
 static std::unique_ptr<storage_helper> create_storage_helper(audit_sink_set audit_sinks, cql3::query_processor& qp, service::migration_manager& mm) {
@@ -162,12 +177,14 @@ audit::audit(locator::shared_token_metadata& token_metadata,
              audited_keyspaces_t&& audited_keyspaces,
              audited_tables_t&& audited_tables,
              category_set&& audited_categories,
+             std::vector<audit_rule>&& audit_rules,
              const db::config& cfg)
     : _token_metadata(token_metadata)
     , _audited_keyspaces(std::move(audited_keyspaces))
     , _audited_tables(std::move(audited_tables))
     , _audited_categories(std::move(audited_categories))
     , _audit_sinks(audit_sinks)
+    , _preprocessed_rules(std::move(audit_rules))
     , _cfg(cfg)
     , _cfg_keyspaces_observer(cfg.audit_keyspaces.observe([this] (sstring const& new_value){ update_config<audited_keyspaces_t>(new_value, parse_audit_keyspaces, _audited_keyspaces); }))
     , _cfg_tables_observer(cfg.audit_tables.observe([this] (sstring const& new_value){ update_config<audited_tables_t>(new_value, parse_audit_tables, _audited_tables); }))
@@ -180,7 +197,13 @@ audit::~audit() = default;
 
 future<> audit::start_audit(const db::config& cfg, sharded<locator::shared_token_metadata>& stm, sharded<cql3::query_processor>& qp, sharded<service::migration_manager>& mm) {
     audit_sink_set audit_sinks = parse_audit_sinks(cfg.audit());
+    auto audit_rules = cfg.audit_rules();
+
     if (!audit_sinks) {
+        if (!audit_rules.empty()) {
+            logger.warn("Audit rules are configured but audit is disabled (audit='none'). "
+                        "Set 'audit' to 'table' or 'syslog' to enable audit rules.");
+        }
         logger.info("Audit is disabled");
         return make_ready_future<>();
     }
@@ -188,8 +211,10 @@ future<> audit::start_audit(const db::config& cfg, sharded<locator::shared_token
     audit::audited_tables_t audited_tables = parse_audit_tables(cfg.audit_tables());
     audit::audited_keyspaces_t audited_keyspaces = parse_audit_keyspaces(cfg.audit_keyspaces());
 
-    logger.info("Audit is enabled. Auditing to: \"{}\", with the following categories: \"{}\", keyspaces: \"{}\", and tables: \"{}\"",
-                cfg.audit(), cfg.audit_categories(), cfg.audit_keyspaces(), cfg.audit_tables());
+    logger.info("Audit is enabled. Auditing to: \"{}\", with the following categories: \"{}\", keyspaces: \"{}\", tables: \"{}\", rules: {}",
+                cfg.audit(), cfg.audit_categories(), cfg.audit_keyspaces(), cfg.audit_tables(), audit_rules.size());
+
+    warn_on_sink_mismatch(audit_rules, audit_sinks);
 
     return audit_instance().start(std::ref(stm),
                                   std::ref(qp),
@@ -198,6 +223,7 @@ future<> audit::start_audit(const db::config& cfg, sharded<locator::shared_token
                                   std::move(audited_keyspaces),
                                   std::move(audited_tables),
                                   std::move(audited_categories),
+                                  std::move(audit_rules),
                                   std::cref(cfg));
 }
 
@@ -307,8 +333,8 @@ future<> inspect(audit_info_alternator& ai, const service::client_state& client_
     return maybe_log(static_cast<const audit_info&>(ai), client_state, ai.get_cl(), error);
 }
 
-future<> audit::log_login(const sstring& username, socket_address client_ip, bool error) noexcept {
-    auto sinks = sinks_for_login();
+future<> audit::log_login(const sstring& username, socket_address client_ip, bool error) {
+    auto sinks = sinks_for_login(username);
     if (!sinks) {
         return make_ready_future<>();
     }
@@ -330,7 +356,7 @@ future<> audit::log_login(const sstring& username, socket_address client_ip, boo
 }
 
 future<> inspect_login(const sstring& username, socket_address client_ip, bool error) {
-    if (!audit::audit_instance().local_is_initialized() || !audit::local_audit_instance().should_log_login()) {
+    if (!audit::audit_instance().local_is_initialized() || !audit::local_audit_instance().should_log_login(username)) {
         return make_ready_future<>();
     }
     return audit::local_audit_instance().log_login(username, client_ip, error);
@@ -347,31 +373,71 @@ bool audit::should_log(const audit_info& audit_info) const {
 
 audit_sink_set audit::sinks_for(const audit_info& audit_info) const {
     audit_sink_set result;
-    if (will_log(audit_info.category(), audit_info.keyspace(), audit_info.table())) {
+    const auto category = audit_info.category();
+    const auto& keyspace = audit_info.keyspace();
+    const auto& table = audit_info.table();
+    if (_audited_categories.contains(category)
+            && (keyspace.empty()
+                || _audited_keyspaces.find(keyspace) != _audited_keyspaces.cend()
+                || should_log_table(keyspace, table)
+                || category == statement_category::AUTH
+                || category == statement_category::ADMIN
+                || category == statement_category::DCL)) {
         result.add(_audit_sinks);
+    }
+
+    if (!_preprocessed_rules.rules().empty()) {
+        result.add(_preprocessed_rules.matching_sinks(audit_info.category_string(),
+                                                       audit_info.keyspace(), audit_info.table(),
+                                                       audit_info.role()));
     }
     return result;
 }
 
-audit_sink_set audit::sinks_for_login() const {
+audit_sink_set audit::sinks_for_login(const sstring& username) const {
     audit_sink_set result;
     if (_audited_categories.contains(statement_category::AUTH)) {
         result.add(_audit_sinks);
     }
+    if (!_preprocessed_rules.rules().empty()) {
+        result.add(_preprocessed_rules.matching_sinks("AUTH", "", "", username));
+    }
     return result;
+}
+
+bool audit::should_log_login(const sstring& username) const {
+    return bool(sinks_for_login(username));
+}
+
+bool audit::rules_may_log(statement_category cat, std::string_view keyspace, std::string_view table) const {
+    if (_preprocessed_rules.rules().empty()) {
+        return false;
+    }
+
+    const auto category = category_to_string(cat);
+    for (const auto& rule : _preprocessed_rules.rules()) {
+        if (!matches_category(rule, category)) {
+            continue;
+        }
+        if (!is_table_scoped_category(category) || keyspace.empty() || matches_table(rule, keyspace, table)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool audit::will_log(statement_category cat, std::string_view keyspace, std::string_view table) const {
     // If keyspace is empty (e.g., ListTables, or batch operations spanning
     // multiple tables), the operation cannot be filtered by keyspace/table,
     // so it is logged whenever the category matches.
-    return _audited_categories.contains(cat)
+    return (_audited_categories.contains(cat)
            && (keyspace.empty()
                          || _audited_keyspaces.find(keyspace) != _audited_keyspaces.cend()
                          || should_log_table(keyspace, table)
                          || cat == statement_category::AUTH
                          || cat == statement_category::ADMIN
-                         || cat == statement_category::DCL);
+                         || cat == statement_category::DCL))
+           || rules_may_log(cat, keyspace, table);
 }
 
 template<class T>
