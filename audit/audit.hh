@@ -13,6 +13,7 @@
 #include "service/client_state.hh"
 #include "db/consistency_level_type.hh"
 #include "audit/audit_rule.hh"
+#include "audit/preprocessed_audit_rules.hh"
 #include <seastar/core/sharded.hh>
 #include <seastar/util/log.hh>
 
@@ -80,7 +81,6 @@ protected:
     sstring _keyspace;
     sstring _table;
     sstring _query;
-    sstring _role;
     bool _batch; // used only for unpacking batches in CQL, not relevant for Alternator
 public:
     audit_info(statement_category cat, sstring keyspace, sstring table, bool batch)
@@ -101,13 +101,9 @@ public:
         }
         return *this;
     }
-    void set_role(sstring role) {
-        _role = std::move(role);
-    }
     const sstring& keyspace() const { return _keyspace; }
     const sstring& table() const { return _table; }
     const sstring& query() const { return _query; }
-    const sstring& role() const { return _role; }
     sstring category_string() const;
     statement_category category() const { return _category; }
     bool batch() const { return _batch; }
@@ -149,6 +145,7 @@ private:
     category_set _audited_categories;
 
     audit_sink_set _audit_sinks;
+    preprocessed_audit_rules _preprocessed_rules;
 
     std::unique_ptr<storage_helper> _storage_helper_ptr;
     bool _storage_running = false;
@@ -162,8 +159,9 @@ private:
     void update_config(const sstring & new_value, std::function<T(const sstring&)> parse_func, T& cfg_parameter);
 
     bool should_log_table(std::string_view keyspace, std::string_view name) const;
-    audit_sink_set sinks_for(const audit_info& audit_info) const;
-    audit_sink_set sinks_for_login() const;
+    bool rules_may_log(statement_category cat, std::string_view keyspace, std::string_view table) const;
+    audit_sink_set sinks_for(const audit_info& audit_info, std::string_view role) const;
+    audit_sink_set sinks_for_login(const sstring& username) const;
 public:
     static seastar::sharded<audit>& audit_instance() {
         // FIXME: leaked intentionally to avoid shutdown problems, see #293
@@ -187,12 +185,13 @@ public:
           audited_keyspaces_t&& audited_keyspaces,
           audited_tables_t&& audited_tables,
           category_set&& audited_categories,
+          std::vector<audit_rule>&& audit_rules,
           const db::config& cfg);
     ~audit();
     future<> shutdown();
     bool should_log(const audit_info& audit_info) const;
     bool will_log(statement_category cat, std::string_view keyspace = {}, std::string_view table = {}) const;
-    bool should_log_login() const { return _audited_categories.contains(statement_category::AUTH); }
+    bool should_log_login(const sstring& username) const;
     future<> log(const audit_info& audit_info, const service::client_state& client_state, std::optional<db::consistency_level> cl, bool error);
     future<> log_login(const sstring& username, socket_address client_ip, bool error) noexcept;
 };
