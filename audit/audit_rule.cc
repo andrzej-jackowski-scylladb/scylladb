@@ -149,6 +149,21 @@ bool matches_category(const audit_rule& rule, std::string_view category) {
 }
 
 bool matches_table(const audit_rule& rule, std::string_view keyspace, std::string_view table) {
+    if (keyspace.empty()) {
+        size_t pos = 0;
+        while (pos <= table.size()) {
+            auto next = table.find('|', pos);
+            auto name = table.substr(pos, next == std::string_view::npos ? next : next - pos);
+            if (matches_qualified_table(rule, name)) {
+                return true;
+            }
+            if (next == std::string_view::npos) {
+                break;
+            }
+            pos = next + 1;
+        }
+        return false;
+    }
     return matches_qualified_table(rule, qualified_table_name(keyspace, table));
 }
 

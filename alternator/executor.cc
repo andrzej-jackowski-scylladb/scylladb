@@ -3323,6 +3323,17 @@ sstring print_names_for_audit(const std::set<sstring>& names) {
     return res;
 }
 
+sstring print_qualified_names_for_audit(const std::set<std::pair<sstring, sstring>>& names) {
+    sstring res;
+    for (const auto& [ks, name] : names) {
+        if (!res.empty()) {
+            res += "|";
+        }
+        res += audit::qualified_table_name(ks, name);
+    }
+    return res;
+}
+
 future<executor::request_return_type> executor::batch_write_item(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request, std::unique_ptr<audit::audit_info_alternator>& audit_info) {
     _stats.api_operations.batch_write_item++;
     auto start_time = std::chrono::steady_clock::now();
@@ -3355,6 +3366,7 @@ future<executor::request_return_type> executor::batch_write_item(client_state& c
     std::vector<std::pair<lw_shared_ptr<stats>, schema_ptr>> per_table_wcu;
 
     std::set<sstring> table_names; // for auditing
+    std::set<std::pair<sstring, sstring>> qualified_table_names;
     // FIXME: will_log() here doesn't pass keyspace/table, so keyspace-level audit
     // filtering is bypassed — a batch spanning multiple tables is audited as a whole.
     bool should_audit = _audit.local_is_initialized() && _audit.local().will_log(audit::statement_category::DML);
@@ -3369,6 +3381,7 @@ future<executor::request_return_type> executor::batch_write_item(client_state& c
         tracing::add_alternator_table_name(trace_state, schema->cf_name());
         if (should_audit) {
             table_names.insert(schema->cf_name());
+            qualified_table_names.emplace(schema->ks_name(), schema->cf_name());
         }
 
         std::unordered_set<primary_key, primary_key_hash, primary_key_equal> used_keys(
@@ -3487,8 +3500,11 @@ future<executor::request_return_type> executor::batch_write_item(client_state& c
     for (const auto& w : per_table_wcu) {
         w.first->api_operations.batch_write_item_latency.mark(duration);
     }
-    maybe_audit(audit_info, audit::statement_category::DML, "",
-                print_names_for_audit(table_names), "BatchWriteItem", request, db::consistency_level::LOCAL_QUORUM);
+    maybe_audit(audit_info, audit::statement_category::DML,
+                "", print_names_for_audit(table_names), "BatchWriteItem", request, db::consistency_level::LOCAL_QUORUM);
+    if (audit_info) {
+        audit_info->set_rule_match_name("", print_qualified_names_for_audit(qualified_table_names));
+    }
     co_return rjson::print(std::move(ret));
 }
 

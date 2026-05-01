@@ -86,6 +86,8 @@ protected:
     sstring _table;
     sstring _query;
     sstring _role;
+    std::optional<sstring> _rule_keyspace;
+    std::optional<sstring> _rule_table;
     bool _batch; // used only for unpacking batches in CQL, not relevant for Alternator
 public:
     audit_info(statement_category cat, sstring keyspace, sstring table, bool batch)
@@ -109,8 +111,14 @@ public:
     void set_role(sstring role) {
         _role = std::move(role);
     }
+    void set_rule_match_name(sstring keyspace, sstring table) {
+        _rule_keyspace = std::move(keyspace);
+        _rule_table = std::move(table);
+    }
     const sstring& keyspace() const { return _keyspace; }
     const sstring& table() const { return _table; }
+    const sstring& rule_keyspace() const { return _rule_keyspace ? *_rule_keyspace : _keyspace; }
+    const sstring& rule_table() const { return _rule_table ? *_rule_table : _table; }
     const sstring& query() const { return _query; }
     const sstring& role() const { return _role; }
     sstring category_string() const;

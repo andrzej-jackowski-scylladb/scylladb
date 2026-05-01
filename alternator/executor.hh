@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <set>
+
 #include <seastar/core/future.hh>
 #include "audit/audit.hh"
 #include "seastarx.hh"
@@ -227,6 +229,7 @@ struct arn_parts {
 //    if not empty - postfix value must start with expected_postfix, but might be longer
 arn_parts parse_arn(std::string_view arn, std::string_view arn_field_name, std::string_view type_name, std::string_view expected_postfix);
 
-// The format is ks1|ks2|ks3... and table1|table2|table3...
+// The format is name1|name2|name3...
 sstring print_names_for_audit(const std::set<sstring>& names);
+sstring print_qualified_names_for_audit(const std::set<std::pair<sstring, sstring>>& names);
 }
