@@ -14,6 +14,18 @@
 
 namespace audit {
 
+sstring category_to_string(statement_category category) {
+    switch (category) {
+        case statement_category::QUERY: return "QUERY";
+        case statement_category::DML: return "DML";
+        case statement_category::DDL: return "DDL";
+        case statement_category::DCL: return "DCL";
+        case statement_category::AUTH: return "AUTH";
+        case statement_category::ADMIN: return "ADMIN";
+    }
+    return "";
+}
+
 static statement_category string_to_category(std::string_view s) {
     if (s == "QUERY") return statement_category::QUERY;
     if (s == "DML") return statement_category::DML;
@@ -53,6 +65,14 @@ std::vector<sstring> json_array_to_string_vec(const rjson::value& arr, const sst
 
 } // anonymous namespace
 
+category_set parse_categories(const std::vector<sstring>& categories) {
+    category_set result;
+    for (const auto& cat : categories) {
+        result.set(string_to_category(cat));
+    }
+    return result;
+}
+
 void validate_audit_rule(const audit_rule& rule) {
     // Sinks: must be non-empty, each must be "table" or "syslog"
     if (rule.sinks.empty()) {
@@ -63,11 +83,6 @@ void validate_audit_rule(const audit_rule& rule) {
             throw audit_exception(fmt::format(
                 "Bad configuration: invalid sink '{}' in audit rule (must be 'table' or 'syslog')", sink));
         }
-    }
-
-    // Categories: each must be a valid statement category name
-    for (const auto& cat : rule.categories) {
-        string_to_category(cat);
     }
 }
 
@@ -103,7 +118,7 @@ std::vector<audit_rule> parse_audit_rules_from_json(const sstring& json_str) {
 
         audit_rule rule;
         rule.sinks = json_array_to_string_vec(*rjson::find(elem, "sinks"), "sinks");
-        rule.categories = json_array_to_string_vec(*rjson::find(elem, "categories"), "categories");
+        rule.categories = parse_categories(json_array_to_string_vec(*rjson::find(elem, "categories"), "categories"));
         rule.qualified_table_names = json_array_to_string_vec(*rjson::find(elem, "qualified_table_names"), "qualified_table_names");
         rule.roles = json_array_to_string_vec(*rjson::find(elem, "roles"), "roles");
 
@@ -120,7 +135,11 @@ sstring audit_rules_to_json_string(const std::vector<audit_rule>& rules) {
     for (const auto& rule : rules) {
         rjson::value obj = rjson::empty_object();
         rjson::add_with_string_name(obj, "sinks", string_vec_to_json(rule.sinks));
-        rjson::add_with_string_name(obj, "categories", string_vec_to_json(rule.categories));
+        rjson::value cat_arr = rjson::empty_array();
+        for (auto cat : rule.categories) {
+            rjson::push_back(cat_arr, rjson::from_string(category_to_string(cat)));
+        }
+        rjson::add_with_string_name(obj, "categories", std::move(cat_arr));
         rjson::add_with_string_name(obj, "qualified_table_names", string_vec_to_json(rule.qualified_table_names));
         rjson::add_with_string_name(obj, "roles", string_vec_to_json(rule.roles));
         rjson::push_back(arr, std::move(obj));
