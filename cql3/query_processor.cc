@@ -44,6 +44,21 @@ logging::logger log("query_processor");
 logging::logger prep_cache_log("prepared_statements_cache");
 logging::logger authorized_prepared_statements_cache_log("authorized_prepared_statements_cache");
 
+// A driver never reads or writes user tables for itself, it only queries system
+// tables on its control connection. Some drivers multiplex the control connection
+// with user load, which would leak user queries into the driver scheduling group.
+// When that happens, permanently reclassify the connection as a regular user
+// connection so it stops using the driver scheduling group (see
+// scylladb/scylladb#26040 and SCYLLADB-2458). This is only needed to work around
+// specific misbehaving drivers, such as the old nodejs driver that mixes up its
+// control connection with regular (non-control) connections; well-behaved drivers
+// keep them separate and are never affected by this reclassification.
+static void maybe_reclassify_control_connection(const cql_statement& statement, service::client_state& client_state) {
+    if (client_state.is_control_connection() && statement.should_reclassify_control_connection()) {
+        client_state.reclassify_as_user_connection();
+    }
+}
+
 const sstring query_processor::CQL_VERSION = "3.3.1";
 
 const std::chrono::minutes prepared_statements_cache::entry_expiry = std::chrono::minutes(60);
@@ -721,6 +736,8 @@ query_processor::process_authorized_statement(const ::shared_ptr<cql_statement> 
 
     statement->validate(*this, client_state);
 
+    maybe_reclassify_control_connection(*statement, client_state);
+
     auto msg = co_await statement->execute_without_checking_exception_message(*this, query_state, options, std::move(guard));
 
     if (msg) {
@@ -1096,6 +1113,7 @@ query_processor::execute_batch_without_checking_exception_message(
         });
     batch->validate();
     batch->validate(*this, query_state.get_client_state());
+    maybe_reclassify_control_connection(*batch, query_state.get_client_state());
     _stats.queries_by_cl[size_t(options.get_consistency())] += batch->get_statements().size();
    if (log.is_enabled(logging::log_level::trace)) {
         std::ostringstream oss;
