@@ -79,6 +79,13 @@ const sstring& modification_statement::keyspace() const {
     return s->ks_name();
 }
 
+bool modification_statement::should_reclassify_control_connection() const {
+    // A control connection legitimately writes only to system tables; writing any
+    // other keyspace means it is being used for user load.
+    const bool is_internal_ks = ::is_internal_keyspace(keyspace());
+    return !is_internal_ks;
+}
+
 const sstring& modification_statement::column_family() const {
     return s->cf_name();
 }

@@ -301,6 +301,13 @@ const sstring& select_statement::keyspace() const {
     return _schema->ks_name();
 }
 
+bool select_statement::should_reclassify_control_connection() const {
+    // A control connection legitimately reads system tables; reading any other
+    // keyspace means it is being used for user load.
+    const bool is_internal_ks = ::is_internal_keyspace(keyspace());
+    return !is_internal_ks;
+}
+
 const sstring& select_statement::column_family() const {
     return _schema->cf_name();
 }
