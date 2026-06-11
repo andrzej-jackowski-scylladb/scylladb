@@ -545,6 +545,64 @@ async def test_control_connection_reclassified_by_user_load(manager: ManagerClie
         logger.info("The reclassified connection serves further queries in sl:default, not sl:driver")
         await _verify_requests_count_metrics(manager, server, 'sl:default', 'sl:driver', system_func)
 
+# A well-behaved driver only ever queries system tables on its control connection.
+# Run the queries that the ScyllaDB-supported drivers send on theirs (see
+# https://docs.scylladb.com/stable/versioning/driver-support.html) and verify the
+# connection keeps running in sl:driver - none of them must trigger a reclassification.
+async def test_control_connection_not_reclassified_by_driver_queries(manager: ManagerClient) -> None:
+    server = await manager.server_add(config=auth_config)
+
+    cql = manager.get_cql()
+    [h] = await wait_for_cql_and_get_hosts(cql, [server], time.time() + 60)
+    await wait_for_token_ring_and_group0_consistency(manager, time.time() + 30)
+
+    await manager.driver_connect() # restart control connection
+    cql = manager.get_cql()
+    control_connection = cql.cluster.control_connection._connection
+
+    control_connection_queries = [
+        # Local node metadata, read by every supported driver (Python, Java, Go,
+        # Rust, C#, CPP-RS, Node.js) right after opening the control connection.
+        "SELECT * FROM system.local WHERE key='local'",
+        # Peer/topology discovery, read by every supported driver. ScyllaDB has no
+        # system.peers_v2, so all drivers fall back to system.peers.
+        "SELECT * FROM system.peers",
+        # Keyspace metadata, read by every schema-aware driver (Python, Java, Go,
+        # Rust, C#, Node.js).
+        "SELECT * FROM system_schema.keyspaces",
+        # Table metadata, read by every schema-aware driver (Python, Java, Go,
+        # Rust, C#, Node.js).
+        "SELECT * FROM system_schema.tables",
+        # Column metadata, read by every schema-aware driver (Python, Java, Go,
+        # Rust, C#, Node.js).
+        "SELECT * FROM system_schema.columns",
+        # User-defined type metadata (Python, Java, Go, Rust, C#).
+        "SELECT * FROM system_schema.types",
+        # User-defined function metadata (Python, Java, C#).
+        "SELECT * FROM system_schema.functions",
+        # User-defined aggregate metadata (Python, Java, C#).
+        "SELECT * FROM system_schema.aggregates",
+        # Materialized view metadata (Python, Java, Go, C#).
+        "SELECT * FROM system_schema.views",
+        # Secondary index metadata (Python, Java, Go, C#).
+        "SELECT * FROM system_schema.indexes",
+        # Token-range size estimates, read by the Go driver (gocql) for token-aware
+        # range planning.
+        "SELECT * FROM system.size_estimates",
+    ]
+
+    def run_control_connection_queries():
+        for query in control_connection_queries:
+            control_connection.wait_for_response(QueryMessage(query, ConsistencyLevel.ONE))
+
+    logger.info("Running the queries that supported drivers send on the control connection")
+    await asyncio.to_thread(run_control_connection_queries)
+
+    logger.info("The control connection still serves driver queries in sl:driver")
+    system_query = QueryMessage("SELECT * FROM system.peers", 1)
+    system_func = lambda: control_connection.wait_for_response(system_query)
+    await _verify_requests_count_metrics(manager, server, 'sl:driver', 'sl:default', system_func)
+
 # Reproduces scylladb/scylladb#26040
 async def test_anonymous_user(manager: ManagerClient) -> None:
     allow_all_config = {'authenticator':'AllowAllAuthenticator', 'authorizer':'AllowAllAuthorizer'}
