@@ -1327,6 +1327,7 @@ future<> cql_server::connection::process_request() {
                     clogger.error("{}: request processing failed: {}",
                                   _client_state.get_remote_address(), std::current_exception());
                 }
+                maybe_update_scheduling_group_after_reclassification();
             });
 
             if (should_paralelize) {
@@ -1504,6 +1505,13 @@ void cql_server::connection::update_scheduling_group() {
         update_control_connection_scheduling_group();
     } else {
         update_user_scheduling_group(_client_state.user());
+    }
+}
+
+void cql_server::connection::maybe_update_scheduling_group_after_reclassification() {
+    if (_client_state.needs_scheduling_group_reclassification()) {
+        _client_state.mark_reclassification_applied();
+        update_scheduling_group();
     }
 }
 
@@ -1957,7 +1965,7 @@ cql_server::connection::process_register(uint16_t stream, request_reader in, ser
         tracing::trace_state_ptr trace_state) {
     using ret_type = std::unique_ptr<cql_server::response>;
 
-    if (!_client_state.is_control_connection()) {
+    if (!_client_state.is_control_connection() && !_client_state.is_reclassified_from_control()) {
         if (_server._sl_controller.has_service_level(qos::service_level_controller::driver_service_level_name)) {
             _client_state.set_control_connection();
             update_scheduling_group();

@@ -130,6 +130,15 @@ private:
 
     auth_state _auth_state = auth_state::UNINITIALIZED;
     bool _control_connection = false;
+    // Set once a control connection is observed running a user (non-system)
+    // query. Such a connection is multiplexed with user load by the driver and
+    // must not keep using the driver scheduling group. The reclassification is
+    // sticky so the connection is never turned back into a control connection.
+    bool _reclassified_from_control = false;
+    // Set together with _reclassified_from_control and cleared once the CQL
+    // server has switched the connection to the user scheduling group, so the
+    // switch happens exactly once.
+    bool _reclassification_pending = false;
 
     // isInternal is used to mark ClientState as used by some internal component
     // that should have an ability to modify system keyspace.
@@ -178,11 +187,28 @@ public:
     }
 
     bool is_control_connection() const noexcept {
-        return _control_connection;
+        return _control_connection && !_reclassified_from_control;
     }
 
     bool set_control_connection() noexcept {
         return _control_connection = true;
+    }
+
+    bool is_reclassified_from_control() const noexcept {
+        return _reclassified_from_control;
+    }
+
+    void reclassify_as_user_connection() noexcept {
+        _reclassified_from_control = true;
+        _reclassification_pending = true;
+    }
+
+    bool needs_scheduling_group_reclassification() const noexcept {
+        return _reclassification_pending;
+    }
+
+    void mark_reclassification_applied() noexcept {
+        _reclassification_pending = false;
     }
 
     std::optional<client_options_cache_entry_type> get_driver_name() const {

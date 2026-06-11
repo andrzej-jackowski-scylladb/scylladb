@@ -333,6 +333,7 @@ private:
         client_data make_client_data() const;
         const service::client_state& get_client_state() const { return _client_state; }
         void update_scheduling_group();
+        void maybe_update_scheduling_group_after_reclassification();
         service::client_state& get_client_state() { return _client_state; }
         scheduling_group get_scheduling_group() const { return _current_scheduling_group; }
     private:
