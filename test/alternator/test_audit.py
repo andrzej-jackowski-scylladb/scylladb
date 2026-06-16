@@ -179,32 +179,23 @@ def _set_audit_rules(cql, rules):
     cql.execute("UPDATE system.config SET value=%s WHERE name='audit_rules'", (json.dumps(rules),))
 
 
-# A fixture to enable auditing for all audit categories for the duration of the test.
-# The main config flag "audit" is not live updatable, so it is required to be already enabled.
-# After the test, the previous audit settings are restored.
-@pytest.fixture(scope="function")
-def alternator_audit_enabled(cql):
-    # Store current values of audit config keys in the system.config table
-    names = ("audit_categories", "audit_keyspaces", "audit_tables", "audit_rules")
-    names_in_clause = ", ".join(f"'{n}'" for n in names)
+# Audit categories enabled by the audit fixtures for the duration of a test.
+ALL_AUDIT_CATEGORIES = "ADMIN,AUTH,QUERY,DML,DDL,DCL"
+
+# Config keys snapshotted and restored around each audited test.
+_AUDIT_CONFIG_KEYS = ("audit_categories", "audit_keyspaces", "audit_tables", "audit_rules")
+
+
+def _snapshot_audit_config(cql):
+    names_in_clause = ", ".join(f"'{n}'" for n in _AUDIT_CONFIG_KEYS)
     rows = cql.execute(f"SELECT name, value FROM system.config WHERE name IN ({names_in_clause})")
-    original_config_vals = {row.name: row.value for row in rows}
+    return {row.name: row.value for row in rows}
 
-    def get_original_config_vals(name, default):
-        val = original_config_vals[name] if name in original_config_vals and original_config_vals[name] is not None else default
-        return _strip_config_quotes(val)
 
-    # Enable auditing for all categories of operations
-    # Note: "audit" itself is not changed here, assuming that auditing is already enabled
-    cql.execute(
-        "UPDATE system.config SET value=%s WHERE name='audit_categories'",
-        ("ADMIN,AUTH,QUERY,DML,DDL,DCL",),
-    )
-    yield
-    # Restore previous values of audit config keys in the system.config table and verify the restoration
-    for name in names:
+def _restore_audit_config(cql, original_config_vals):
+    for name in _AUDIT_CONFIG_KEYS:
         if name in original_config_vals:
-            original_val = get_original_config_vals(name, "")
+            original_val = _strip_config_quotes(original_config_vals[name]) if original_config_vals[name] is not None else ""
             cql.execute("UPDATE system.config SET value=%s WHERE name=%s", (original_val, name))
             restored = cql.execute("SELECT value FROM system.config WHERE name=%s", (name,)).one()
             restored_value = _strip_config_quotes(restored.value) if restored else None
@@ -214,6 +205,100 @@ def alternator_audit_enabled(cql):
         else:
             # If the key wasn't present before the test, remove it so we don't leave test artifacts behind
             cql.execute("DELETE FROM system.config WHERE name=%s", (name,))
+
+
+def _qualified_table_pattern(table_spec):
+    # Translate a legacy audit_tables entry into a qualified_table_names glob.
+    # "alternator.<name>" refers to the Alternator table whose real keyspace is
+    # "alternator_<name>", mirroring the audit_tables parser; "ks.tbl" is used as-is.
+    keyspace, _, table = table_spec.partition(".")
+    if keyspace == "alternator":
+        keyspace = f"alternator_{table}"
+    return f"{keyspace}.{table}"
+
+
+# Applies audit configuration either through the legacy
+# audit_categories/audit_keyspaces/audit_tables options ("legacy" mode) or
+# through an equivalent single audit_rules entry ("rules" mode). This lets the
+# behavioral tests exercise both filtering mechanisms from one test body.
+class AuditConfig:
+    def __init__(self, cql, mode):
+        self.cql = cql
+        self.mode = mode
+        self._categories = ALL_AUDIT_CATEGORIES
+        self._keyspaces = ""
+        self._tables = ""
+        if mode == "rules":
+            # Only audit_rules drives auditing; keep the legacy filters disabled.
+            for name in ("audit_categories", "audit_keyspaces", "audit_tables"):
+                cql.execute(f"UPDATE system.config SET value=%s WHERE name='{name}'", ("",))
+            self._apply_rules()
+        else:
+            cql.execute("UPDATE system.config SET value=%s WHERE name='audit_categories'", (ALL_AUDIT_CATEGORIES,))
+
+    def set_categories(self, categories):
+        self._categories = categories
+        if self.mode == "legacy":
+            self.cql.execute("UPDATE system.config SET value=%s WHERE name='audit_categories'", (categories,))
+        else:
+            self._apply_rules()
+
+    def set_keyspaces(self, keyspaces):
+        self._keyspaces = keyspaces
+        if self.mode == "legacy":
+            self.cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (keyspaces,))
+        else:
+            self._apply_rules()
+
+    def set_tables(self, tables):
+        self._tables = tables
+        if self.mode == "legacy":
+            self.cql.execute("UPDATE system.config SET value=%s WHERE name='audit_tables'", (tables,))
+        else:
+            self._apply_rules()
+
+    def _apply_rules(self):
+        patterns = [f"{ks.strip()}.*" for ks in self._keyspaces.split(",") if ks.strip()]
+        patterns += [_qualified_table_pattern(t.strip()) for t in self._tables.split(",") if t.strip()]
+        categories = [c.strip() for c in self._categories.split(",") if c.strip()]
+        if not patterns or not categories:
+            _set_audit_rules(self.cql, [])
+            return
+        _set_audit_rules(self.cql, [{
+            "sinks": ["table"],
+            "categories": categories,
+            "qualified_table_names": patterns,
+            "roles": ["*"],
+        }])
+
+
+# A fixture to enable auditing for all audit categories for the duration of the test.
+# The main config flag "audit" is not live updatable, so it is required to be already enabled.
+# After the test, the previous audit settings are restored.
+@pytest.fixture(scope="function")
+def alternator_audit_enabled(cql):
+    original_config_vals = _snapshot_audit_config(cql)
+    # Enable auditing for all categories of operations.
+    # Note: "audit" itself is not changed here, assuming that auditing is already enabled.
+    cql.execute(
+        "UPDATE system.config SET value=%s WHERE name='audit_categories'",
+        (ALL_AUDIT_CATEGORIES,),
+    )
+    yield
+    _restore_audit_config(cql, original_config_vals)
+
+
+# Parametrized variant of alternator_audit_enabled that yields an AuditConfig
+# applying the same audit intent through either the legacy options or an
+# equivalent audit_rules entry, so behavioral tests run under both mechanisms.
+@pytest.fixture(scope="function", params=["legacy", "rules"])
+def audit_config(request, cql):
+    original_config_vals = _snapshot_audit_config(cql)
+    config = AuditConfig(cql, request.param)
+    yield config
+    _restore_audit_config(cql, original_config_vals)
+
+
 
 def _wait_for_active_stream(client, table_name, timeout=10):
     # Wait until the table has an active stream and return the stream ARN.
@@ -231,14 +316,13 @@ def _wait_for_active_stream(client, table_name, timeout=10):
 
 # Test auditing of DML item operations: PutItem, UpdateItem, DeleteItem.
 # One call per operation type, producing 3 audit entries total.
-def test_audit_dml_operations(dynamodb, cql, alternator_audit_enabled):
+def test_audit_dml_operations(dynamodb, cql, audit_config):
     # Use a schema with both hash and range keys, to allow more varied Query-s.
     with new_test_table(dynamodb, **HASH_AND_RANGE_SCHEMA) as table:
         ks_name = f"alternator_{table.name}"
-        # Enable audit for the current table's keyspace. The `alternator_audit_enabled` fixture
-        # ensures that `audit_keyspaces` in system.config has been already stored too and will be
-        # restored after the test.
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_name,))
+        # Audit the current table's keyspace; the audit_config fixture restores
+        # the previous audit configuration after the test.
+        audit_config.set_keyspaces(ks_name)
         before_rows = _get_audit_log_rows(cql)
         # The format inside expected is: (category, consistency, error(bool), keyspace_name, table_name, [fragments that should appear in the operation text])
         expected = []
@@ -259,13 +343,12 @@ def test_audit_dml_operations(dynamodb, cql, alternator_audit_enabled):
 # Test auditing of the DML batch operation: BatchWriteItem.
 # A single BatchWriteItem call produces one audit entry regardless of the number of items in the batch.
 # Batch operations leave keyspace_name empty because they can span multiple tables.
-def test_audit_dml_batch_operations(dynamodb, cql, alternator_audit_enabled):
+def test_audit_dml_batch_operations(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table:
         ks_name = f"alternator_{table.name}"
-        # Enable audit for the current table's keyspace. The `alternator_audit_enabled` fixture
-        # ensures that `audit_keyspaces` in system.config has been already stored too and will be
-        # restored after the test.
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_name,))
+        # Audit the current table's keyspace; the audit_config fixture restores
+        # the previous audit configuration after the test.
+        audit_config.set_keyspaces(ks_name)
         before_rows = _get_audit_log_rows(cql)
         client = table.meta.client
         # BatchWriteItem with PutRequest items targeting a single table.
@@ -284,14 +367,13 @@ def test_audit_dml_batch_operations(dynamodb, cql, alternator_audit_enabled):
 # Test auditing of QUERY item operations: GetItem, Query, Scan.
 # Exercises both ConsistentRead=True (LOCAL_QUORUM) and False (LOCAL_ONE),
 # as well as range vs. exact Query predicates and Scan with/without FilterExpression.
-def test_audit_query_item_operations(dynamodb, cql, alternator_audit_enabled):
+def test_audit_query_item_operations(dynamodb, cql, audit_config):
     # Use a schema with both hash and range keys, to allow more varied Query-s.
     with new_test_table(dynamodb, **HASH_AND_RANGE_SCHEMA) as table:
         ks_name = f"alternator_{table.name}"
-        # Enable audit for the current table's keyspace. The `alternator_audit_enabled` fixture
-        # ensures that `audit_keyspaces` in system.config has been already stored too and will be
-        # restored after the test.
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_name,))
+        # Audit the current table's keyspace; the audit_config fixture restores
+        # the previous audit configuration after the test.
+        audit_config.set_keyspaces(ks_name)
         before_rows = _get_audit_log_rows(cql)
         # The format inside expected is: (category, consistency, error(bool), keyspace_name, table_name, [fragments that should appear in the operation text])
         expected = []
@@ -342,16 +424,15 @@ def test_audit_query_item_operations(dynamodb, cql, alternator_audit_enabled):
 # A single BatchGetItem call produces one audit entry.
 # The audit entry records CL=ANY as a placeholder; per-item consistency is set individually.
 # Batch operations leave keyspace_name empty because they can span multiple tables.
-def test_audit_query_batch_operations(dynamodb, cql, alternator_audit_enabled):
+def test_audit_query_batch_operations(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table:
         ks_name = f"alternator_{table.name}"
         # Pre-populate the table.
         for i in range(4):
             table.put_item(Item={"p": f"pk_{i}"})
-        # Enable audit for the current table's keyspace. The `alternator_audit_enabled` fixture
-        # ensures that `audit_keyspaces` in system.config has been already stored too and will be
-        # restored after the test.
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_name,))
+        # Audit the current table's keyspace; the audit_config fixture restores
+        # the previous audit configuration after the test.
+        audit_config.set_keyspaces(ks_name)
         before_rows = _get_audit_log_rows(cql)
         client = table.meta.client
         client.batch_get_item(RequestItems={table.name: {"Keys": [{"p": f"pk_{i}"} for i in range(4)]}})
@@ -366,14 +447,13 @@ def test_audit_query_batch_operations(dynamodb, cql, alternator_audit_enabled):
 # log entries for that table. A batch touching only non-audited tables should
 # produce no audit entry at all. A batch touching both audited and non-audited
 # tables should only include the audited table in the log entry.
-def test_audit_batch_write_item_respects_table_filter(dynamodb, cql, alternator_audit_enabled):
+def test_audit_batch_write_item_respects_table_filter(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table_a:
         with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table_b:
             ks_a = f"alternator_{table_a.name}"
             # Only audit table_a via audit_tables.
-            cql.execute("UPDATE system.config SET value=%s WHERE name='audit_tables'",
-                        (f"alternator.{table_a.name}",))
-            cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", ("",))
+            audit_config.set_tables(f"alternator.{table_a.name}")
+            audit_config.set_keyspaces("")
             client = table_a.meta.client
 
             # --- Batch 1: only table_a (audited) ---
@@ -421,7 +501,7 @@ def test_audit_batch_write_item_respects_table_filter(dynamodb, cql, alternator_
 # This mirrors test_audit_batch_write_item_respects_table_filter for QUERY
 # batches: only audited tables should appear in the audit row, and the JSON
 # request stored in the operation field should not contain non-audited tables.
-def test_audit_batch_get_item_respects_table_filter(dynamodb, cql, alternator_audit_enabled):
+def test_audit_batch_get_item_respects_table_filter(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table_a:
         with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table_b:
             table_a.put_item(Item={"p": "pk_a"})
@@ -429,9 +509,8 @@ def test_audit_batch_get_item_respects_table_filter(dynamodb, cql, alternator_au
 
             ks_a = f"alternator_{table_a.name}"
             # Only audit table_a via audit_tables.
-            cql.execute("UPDATE system.config SET value=%s WHERE name='audit_tables'",
-                        (f"alternator.{table_a.name}",))
-            cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", ("",))
+            audit_config.set_tables(f"alternator.{table_a.name}")
+            audit_config.set_keyspaces("")
             client = table_a.meta.client
 
             # --- Batch 1: only table_a (audited) ---
@@ -480,14 +559,13 @@ def test_audit_batch_get_item_respects_table_filter(dynamodb, cql, alternator_au
 # DDL and metadata-query operations have no meaningful CL (stored as "").
 # The DescribeTable call (used to fetch the TableArn) also produces a QUERY entry.
 # Produces 7 audit entries.
-def test_audit_ddl_operations(dynamodb, cql, alternator_audit_enabled):
+def test_audit_ddl_operations(dynamodb, cql, audit_config):
     client = dynamodb.meta.client
     table_name = unique_table_name()
     ks_name = f"alternator_{table_name}"
-    # Enable audit for the current table's keyspace. The `alternator_audit_enabled` fixture
-    # ensures that `audit_keyspaces` in system.config has been already stored too and will be
-    # restored after the test.
-    cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_name,))
+    # Audit the current table's keyspace; the audit_config fixture restores
+    # the previous audit configuration after the test.
+    audit_config.set_keyspaces(ks_name)
     before_rows = _get_audit_log_rows(cql)
     # The format inside expected is: (category, consistency, error(bool), keyspace_name, table_name, [fragments that should appear in the operation text])
     expected = []
@@ -551,13 +629,12 @@ def test_audit_ddl_operations(dynamodb, cql, alternator_audit_enabled):
 # DescribeTimeToLive, DescribeContinuousBackups, ListTables, DescribeEndpoints.
 # ListTables and DescribeEndpoints have empty keyspace/table.
 # Produces 6 audit entries.
-def test_audit_query_table_operations(dynamodb, cql, alternator_audit_enabled):
+def test_audit_query_table_operations(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table:
         ks_name = f"alternator_{table.name}"
-        # Enable audit for the current table's keyspace. The `alternator_audit_enabled` fixture
-        # ensures that `audit_keyspaces` in system.config has been already stored too and will be
-        # restored after the test.
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_name,))
+        # Audit the current table's keyspace; the audit_config fixture restores
+        # the previous audit configuration after the test.
+        audit_config.set_keyspaces(ks_name)
         before_rows = _get_audit_log_rows(cql)
         expected = []
         client = table.meta.client
@@ -599,7 +676,7 @@ def test_audit_query_table_operations(dynamodb, cql, alternator_audit_enabled):
 #   - GetRecords: keyspace is the CDC log table's keyspace,
 #     table is pipe-separated "base_table|cdc_table". CL=LOCAL_QUORUM.
 # Produces 5 audit entries.
-def test_audit_streams_operations(dynamodb, dynamodbstreams, cql, alternator_audit_enabled):
+def test_audit_streams_operations(dynamodb, dynamodbstreams, cql, audit_config):
     with new_test_table(dynamodb, StreamSpecification={"StreamEnabled": True, "StreamViewType": "NEW_AND_OLD_IMAGES"}, **HASH_ONLY_SCHEMA) as table:
         ks_name = f"alternator_{table.name}"
         client = table.meta.client
@@ -610,10 +687,9 @@ def test_audit_streams_operations(dynamodb, dynamodbstreams, cql, alternator_aud
         # In Alternator the base and CDC tables share the same keyspace.
         cdc_table = f"{table.name}_scylla_cdc_log"
         piped_table = f"{table.name}|{cdc_table}"
-        # Enable audit for the current table's keyspace.
-        # The `alternator_audit_enabled` fixture ensures that `audit_keyspaces` in system.config
-        # has been already stored too and will be restored after the test.
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_name,))
+        # Audit the current table's keyspace; the audit_config fixture restores
+        # the previous audit configuration after the test.
+        audit_config.set_keyspaces(ks_name)
         before_rows = _get_audit_log_rows(cql)
         expected = []
         # ListStreams - audits the input table name when TableName is given.
@@ -650,16 +726,16 @@ def test_audit_streams_operations(dynamodb, dynamodbstreams, cql, alternator_aud
 # and a negative (should-NOT-be-logged) operation. The negative event is performed first;
 # once the positive event's audit entry arrives, the absence of the negative entry is
 # conclusive — they share the same audit pipeline.
-def test_audit_category_filtering(dynamodb, cql, alternator_audit_enabled):
+def test_audit_category_filtering(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_AND_RANGE_SCHEMA) as table:
         ks_name = f"alternator_{table.name}"
         client = table.meta.client
         # Pre-populate so reads return data.
         table.put_item(Item={"p": "pk_0", "c": "ck_0", "v": "val"})
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_name,))
+        audit_config.set_keyspaces(ks_name)
 
         # Phase A: DML excluded (only QUERY enabled).
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_categories'", ("QUERY",))
+        audit_config.set_categories("QUERY")
         before_rows = _get_audit_log_rows(cql)
         # Negative: PutItem is DML — should NOT be logged.
         table.put_item(Item={"p": "pk_neg", "c": "ck_neg", "v": "neg"})
@@ -673,7 +749,7 @@ def test_audit_category_filtering(dynamodb, cql, alternator_audit_enabled):
             _assert_no_audit_entries_for(new_rows, category="QUERY")  # sanity check
 
         # Phase B: QUERY excluded (only DML enabled).
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_categories'", ("DML",))
+        audit_config.set_categories("DML")
         before_rows = _get_audit_log_rows(cql)
         # Negative: GetItem is QUERY — should NOT be logged.
         table.get_item(Key={"p": "pk_0", "c": "ck_0"})
@@ -687,7 +763,7 @@ def test_audit_category_filtering(dynamodb, cql, alternator_audit_enabled):
             _assert_no_audit_entries_for(new_rows, category="DML")  # sanity check
 
         # Phase C: DDL excluded (only DML and QUERY enabled).
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_categories'", ("DML,QUERY",))
+        audit_config.set_categories("DML,QUERY")
         before_rows = _get_audit_log_rows(cql)
         # Get table ARN for TagResource (a DDL operation).
         desc = client.describe_table(TableName=table.name)
@@ -714,13 +790,13 @@ def test_audit_category_filtering(dynamodb, cql, alternator_audit_enabled):
 # Two tables are created; audit_keyspaces is set to only one table's keyspace.
 # Operations on the non-audited table should produce no entries, while operations
 # on the audited table (positive canary) confirm the audit pipeline is working.
-def test_audit_keyspace_filtering(dynamodb, cql, alternator_audit_enabled):
+def test_audit_keyspace_filtering(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table_a:
         with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table_b:
             ks_a = f"alternator_{table_a.name}"
             ks_b = f"alternator_{table_b.name}"
             # Audit only table_a's keyspace.
-            cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_a,))
+            audit_config.set_keyspaces(ks_a)
             before_rows = _get_audit_log_rows(cql)
             # Negative: operations on table_b (wrong keyspace) — should NOT be logged.
             table_b.put_item(Item={"p": "pk_b"})
@@ -740,13 +816,13 @@ def test_audit_keyspace_filtering(dynamodb, cql, alternator_audit_enabled):
 # GetItem with an extra bogus key attribute passes table lookup (audit_info is set)
 # but then check_key() throws ValidationException. A normal GetItem follows as the
 # positive canary (error=False). Both entries should be present.
-def test_audit_error_entry(dynamodb, cql, alternator_audit_enabled):
+def test_audit_error_entry(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table:
         ks_name = f"alternator_{table.name}"
         # Insert data so the GetItems have something to return.
         table.put_item(Item={"p": "pk_0"})
         table.put_item(Item={"p": "canary_0"})
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", (ks_name,))
+        audit_config.set_keyspaces(ks_name)
         before_rows = _get_audit_log_rows(cql)
         # Negative operation: GetItem with an extra key attribute beyond the schema.
         # The table has only "p" as the hash key, so passing "bogus" triggers check_key()
@@ -768,14 +844,14 @@ def test_audit_error_entry(dynamodb, cql, alternator_audit_enabled):
 # should_log() function short-circuits on keyspace().empty().
 # Meanwhile, operations with a non-empty keyspace that is NOT in audit_keyspaces
 # should NOT be logged.
-def test_audit_empty_keyspace_bypass(dynamodb, cql, alternator_audit_enabled):
+def test_audit_empty_keyspace_bypass(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table:
         ks_name = f"alternator_{table.name}"
         client = table.meta.client
         # Set audit_keyspaces to an unrelated keyspace — NOT the table's keyspace
         # and NOT an empty string. This means table-scoped operations on our table
         # should be filtered out, but empty-keyspace operations should still pass.
-        cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", ("nonexistent_ks",))
+        audit_config.set_keyspaces("nonexistent_ks")
         before_rows = _get_audit_log_rows(cql)
         # Negative: PutItem on the table (non-empty keyspace, not in audit_keyspaces) — should NOT be logged.
         table.put_item(Item={"p": "pk_0"})
@@ -797,16 +873,15 @@ def test_audit_empty_keyspace_bypass(dynamodb, cql, alternator_audit_enabled):
 # audit_tables=alternator.<table_a>, the parser expands this to the internal
 # keyspace name alternator_<table_a> with table <table_a>. Only operations on
 # table_a should be audited; operations on table_b should NOT appear.
-def test_audit_tables_filtering(dynamodb, cql, alternator_audit_enabled):
+def test_audit_tables_filtering(dynamodb, cql, audit_config):
     with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table_a:
         with new_test_table(dynamodb, **HASH_ONLY_SCHEMA) as table_b:
             ks_a = f"alternator_{table_a.name}"
             ks_b = f"alternator_{table_b.name}"
-            # Use the alternator.<table> shorthand in audit_tables.
-            cql.execute("UPDATE system.config SET value=%s WHERE name='audit_tables'",
-                        (f"alternator.{table_a.name}",))
-            # Clear audit_keyspaces so it doesn't interfere with the test.
-            cql.execute("UPDATE system.config SET value=%s WHERE name='audit_keyspaces'", ("",))
+            # Use the alternator.<table> shorthand in audit_tables and clear
+            # audit_keyspaces so it doesn't interfere with the test.
+            audit_config.set_tables(f"alternator.{table_a.name}")
+            audit_config.set_keyspaces("")
             before_rows = _get_audit_log_rows(cql)
             # Negative: PutItem on table_b — should NOT be logged.
             table_b.put_item(Item={"p": "pk_b"})
