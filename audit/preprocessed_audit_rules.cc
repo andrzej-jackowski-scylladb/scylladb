@@ -190,4 +190,39 @@ audit_sink_set preprocessed_audit_rules::matching_sinks(statement_category categ
     return result;
 }
 
+bool preprocessed_audit_rules::may_log_any_role(statement_category category,
+                                                std::string_view keyspace,
+                                                std::string_view table) const {
+    if (_rules.empty()) {
+        return false;
+    }
+
+    // Table-independent categories (AUTH, ADMIN, DCL) or operations with empty
+    // keyspace cannot be filtered by table: any rule with a matching category
+    // may log (the role is intentionally ignored by this pre-filter).
+    if (!is_table_scoped_category(category) || keyspace.empty()) {
+        return std::ranges::any_of(_rules, [category] (const audit_rule& rule) {
+            return matches_category(rule, category);
+        });
+    }
+
+    auto table_it = _table_to_matching_rules.find(
+        std::pair<std::string_view, std::string_view>{keyspace, table});
+    if (table_it == _table_to_matching_rules.end()) {
+        // Unknown table — slow path: evaluate table patterns with fnmatch.
+        return std::ranges::any_of(_rules, [&] (const audit_rule& rule) {
+            return matches_category(rule, category) && matches_table(rule, keyspace, table);
+        });
+    }
+
+    // Known table — use the precomputed bitset, no fnmatch on the hot path.
+    const auto& table_bits = table_it->second;
+    for (auto i = table_bits.find_first(); i != rule_bitset::npos; i = table_bits.find_next(i)) {
+        if (matches_category(_rules[i], category)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace audit

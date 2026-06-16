@@ -580,21 +580,7 @@ bool audit::should_log_login(const sstring& username) const {
 }
 
 bool audit::rules_may_log(statement_category cat, std::string_view keyspace, std::string_view table) const {
-    if (_preprocessed_rules.rules().empty()) {
-        return false;
-    }
-
-    for (const auto& rule : _preprocessed_rules.rules()) {
-        if (!matches_category(rule, cat)) {
-            continue;
-        }
-        // If keyspace is empty (e.g., global operations with no table), skip
-        // table matching and assume the rule may log.
-        if (!is_table_scoped_category(cat) || keyspace.empty() || matches_table(rule, keyspace, table)) {
-            return true;
-        }
-    }
-    return false;
+    return _preprocessed_rules.may_log_any_role(cat, keyspace, table);
 }
 
 bool audit::will_log(statement_category cat, std::string_view keyspace, std::string_view table) const {

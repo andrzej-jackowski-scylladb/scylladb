@@ -46,6 +46,15 @@ public:
     audit_sink_set matching_sinks(statement_category category, std::string_view keyspace,
                                   std::string_view table, std::string_view role) const;
 
+    /// Returns true if any configured rule could log an event of the given
+    /// category and keyspace/table, ignoring the role. Used as a cheap
+    /// pre-filter (e.g. Alternator's will_log) to decide whether building a
+    /// full audit_info is worthwhile. For known tables it consults the
+    /// precomputed cache and avoids per-event fnmatch; unknown tables fall
+    /// back to direct pattern evaluation, like matching_sinks().
+    bool may_log_any_role(statement_category category, std::string_view keyspace,
+                          std::string_view table) const;
+
     const std::vector<audit_rule>& rules() const noexcept { return _rules; }
     const std::unordered_set<sstring>& known_roles() const noexcept { return _known_roles; }
 
