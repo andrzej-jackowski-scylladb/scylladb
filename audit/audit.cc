@@ -20,8 +20,6 @@
 #include "audit_cf_storage_helper.hh"
 #include "audit_syslog_storage_helper.hh"
 #include "audit_composite_storage_helper.hh"
-#include "audit.hh"
-#include "../db/config.hh"
 #include "service/migration_listener.hh"
 #include "service/migration_manager.hh"
 
@@ -289,10 +287,10 @@ future<> audit::stop_audit() {
     if (!audit_instance().local_is_initialized()) {
         return make_ready_future<>();
     }
-    return audit::audit::audit_instance().invoke_on_all([] (auto& local_audit) {
+    return audit_instance().invoke_on_all([] (auto& local_audit) {
         return local_audit.shutdown();
     }).then([] {
-        return audit::audit::audit_instance().stop();
+        return audit_instance().stop();
     });
 }
 
@@ -336,7 +334,7 @@ future<> audit::log(const audit_info& audit_info, const service::client_state& c
     if (!_preprocessed_rules.rules().empty() && client_state.user() && client_state.user()->name) {
         role = *client_state.user()->name;
     }
-    thread_local static sstring no_username("undefined");
+    static const sstring no_username("undefined");
     static const sstring anonymous_username("anonymous");
     const sstring& username = client_state.user() ? client_state.user()->name.value_or(anonymous_username) : no_username;
     socket_address client_ip = client_state.get_client_address().addr();
