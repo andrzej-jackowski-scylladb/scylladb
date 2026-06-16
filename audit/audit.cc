@@ -534,38 +534,27 @@ bool audit::should_log_table(std::string_view keyspace, std::string_view name) c
     return keyspace_it != _audited_tables.cend() && keyspace_it->second.find(name) != keyspace_it->second.cend();
 }
 
-audit_sink_set audit::sinks_for(const audit_info& audit_info, std::string_view role) const {
-    audit_sink_set result;
-    const auto category = audit_info.category();
-    const auto& keyspace = audit_info.keyspace();
-    const auto& table = audit_info.table();
-    if (_audited_categories.contains(category)
-            && (keyspace.empty()
-                || _audited_keyspaces.find(keyspace) != _audited_keyspaces.cend()
-                || should_log_table(keyspace, table)
-                || category == statement_category::AUTH
-                || category == statement_category::ADMIN
-                || category == statement_category::DCL)) {
-        result.add(_audit_sinks);
+bool audit::legacy_should_log(statement_category category, std::string_view keyspace, std::string_view table) const {
+    if (!_audited_categories.contains(category)) {
+        return false;
     }
+    // Table-independent categories (AUTH, ADMIN, DCL) and operations with no
+    // keyspace/table context (e.g. batches spanning multiple tables) bypass the
+    // keyspace/table filter and are logged whenever the category matches.
+    if (keyspace.empty() || !is_table_scoped_category(category)) {
+        return true;
+    }
+    return _audited_keyspaces.find(keyspace) != _audited_keyspaces.cend()
+            || should_log_table(keyspace, table);
+}
 
-    if (!_preprocessed_rules.rules().empty()) {
-        result.add(_preprocessed_rules.matching_sinks(category,
-                                                       audit_info.keyspace(), audit_info.table(),
-                                                        role));
-    }
-    return result;
+audit_sink_set audit::sinks_for(const audit_info& audit_info, std::string_view role) const {
+    return sinks_for_table(audit_info.category(), audit_info.keyspace(), audit_info.table(), role);
 }
 
 audit_sink_set audit::sinks_for_table(statement_category category, std::string_view keyspace, std::string_view table, std::string_view role) const {
     audit_sink_set result;
-    if (_audited_categories.contains(category)
-            && (keyspace.empty()
-                || _audited_keyspaces.find(keyspace) != _audited_keyspaces.cend()
-                || should_log_table(keyspace, table)
-                || category == statement_category::AUTH
-                || category == statement_category::ADMIN
-                || category == statement_category::DCL)) {
+    if (legacy_should_log(category, keyspace, table)) {
         result.add(_audit_sinks);
     }
 
@@ -609,17 +598,7 @@ bool audit::rules_may_log(statement_category cat, std::string_view keyspace, std
 }
 
 bool audit::will_log(statement_category cat, std::string_view keyspace, std::string_view table) const {
-    // If keyspace is empty (e.g., ListTables, or batch operations spanning
-    // multiple tables), the operation cannot be filtered by keyspace/table,
-    // so it is logged whenever the category matches.
-    return (_audited_categories.contains(cat)
-           && (keyspace.empty()
-                         || _audited_keyspaces.find(keyspace) != _audited_keyspaces.cend()
-                         || should_log_table(keyspace, table)
-                         || cat == statement_category::AUTH
-                         || cat == statement_category::ADMIN
-                         || cat == statement_category::DCL))
-           || rules_may_log(cat, keyspace, table);
+    return legacy_should_log(cat, keyspace, table) || rules_may_log(cat, keyspace, table);
 }
 
 template<class T>
