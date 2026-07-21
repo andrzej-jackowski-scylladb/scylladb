@@ -790,7 +790,8 @@ static do_find_idx_result do_find_idx(
         bool uses_secondary_indexing,
         const secondary_index::secondary_index_manager& sim,
         std::span<const index_search_group> search_groups,
-        allow_local_index allow_local);
+        allow_local_index allow_local,
+        forced_index_opt forced_index);
 
 
 bool is_empty_restriction(const expression& e) {
@@ -815,7 +816,8 @@ statement_restrictions::statement_restrictions(private_tag,
         bool selects_only_static_columns,
         bool for_view,
         bool allow_filtering,
-        check_indexes do_check_indexes)
+        check_indexes do_check_indexes,
+        forced_index_opt forced_index)
     : statement_restrictions(private_tag{}, schema, allow_filtering)
 {
     _check_indexes = do_check_indexes;
@@ -1120,18 +1122,48 @@ statement_restrictions::statement_restrictions(private_tag,
         const expr::allow_local_index allow_local(
                 !has_partition_key_unrestricted_components()
                 && partition_key_restrictions_is_all_eq());
-        if (!_has_multi_column) {
-            _has_queriable_ck_index = index_supports_some_column(sc_ck_pred_vectors, sim, allow_local)
-                    && !type.is_delete();
+        // When continuing a paged query that used a named secondary index, that
+        // same index must still exist for the saved position to be meaningful.
+        // If it was dropped between pages the query can't be resumed with a
+        // different plan, so fail with a clear error before we fall back to
+        // base-table filtering (which would either return wrong results or
+        // raise a misleading "use ALLOW FILTERING" error). See issue #18992.
+        if (forced_index && !forced_index->empty()) {
+            const auto& indexes = sim.list_indexes();
+            const bool index_exists = std::ranges::any_of(indexes,
+                    [&] (const secondary_index::index& idx) {
+                        return idx.metadata().name() == *forced_index;
+                    });
+            if (!index_exists) {
+                throw exceptions::invalid_request_exception(format(
+                        "Cannot continue paged query: secondary index \"{}\" used by this "
+                        "query is no longer available. Please retry the query from the "
+                        "beginning.",
+                        *forced_index));
+            }
+        }
+        // When continuing a paged query whose plan used the base table (no
+        // secondary index), keep using the base table even if an index that
+        // could serve this query was created between pages (issue #18992).
+        const bool force_base_plan = forced_index && forced_index->empty();
+        if (force_base_plan) {
+            _has_queriable_ck_index = false;
+            _has_queriable_pk_index = false;
+            _has_queriable_regular_index = false;
         } else {
-            _has_queriable_ck_index = multi_column_predicates_have_supporting_index(mc_ck_preds, sim, allow_local)
+            if (!_has_multi_column) {
+                _has_queriable_ck_index = index_supports_some_column(sc_ck_pred_vectors, sim, allow_local)
+                        && !type.is_delete();
+            } else {
+                _has_queriable_ck_index = multi_column_predicates_have_supporting_index(mc_ck_preds, sim, allow_local)
+                        && !type.is_delete();
+            }
+            _has_queriable_pk_index = !has_token
+                    && index_supports_some_column(sc_pk_pred_vectors, sim, allow_local)
+                    && !type.is_delete();
+            _has_queriable_regular_index = index_supports_some_column(sc_nonpk_pred_vectors, sim, allow_local)
                     && !type.is_delete();
         }
-        _has_queriable_pk_index = !has_token
-                && index_supports_some_column(sc_pk_pred_vectors, sim, allow_local)
-                && !type.is_delete();
-        _has_queriable_regular_index = index_supports_some_column(sc_nonpk_pred_vectors, sim, allow_local)
-                && !type.is_delete();
     } else {
         _has_queriable_ck_index = false;
         _has_queriable_pk_index = false;
@@ -1207,7 +1239,7 @@ statement_restrictions::statement_restrictions(private_tag,
                 !has_partition_key_unrestricted_components()
                 && partition_key_restrictions_is_all_eq());
         auto idx_result = do_find_idx(
-                _uses_secondary_indexing, sim, search_groups, allow_local_for_idx);
+                _uses_secondary_indexing, sim, search_groups, allow_local_for_idx, std::move(forced_index));
         if (idx_result.index) {
             _idx_opt = std::make_unique<secondary_index::index>(std::move(*idx_result.index));
         }
@@ -1370,10 +1402,18 @@ static do_find_idx_result do_find_idx(
         bool uses_secondary_indexing,
         const secondary_index::secondary_index_manager& sim,
         std::span<const index_search_group> search_groups,
-        allow_local_index allow_local) {
+        allow_local_index allow_local,
+        forced_index_opt forced_index) {
     if (!uses_secondary_indexing) {
         return {std::nullopt, expr::conjunction({}), {}};
     }
+
+    // When continuing a paged query that used a named secondary index, keep
+    // using that same index so the position saved in the paging state remains
+    // valid even if the set of indexes changed between pages (issue #18992).
+    // An empty forced_index would mean "force base plan" and is handled before
+    // we ever get here (uses_secondary_indexing is false in that case).
+    const bool has_forced_index = forced_index && !forced_index->empty();
 
     // Current score table:
     // local and restrictions include full partition key: 2
@@ -1411,6 +1451,9 @@ static do_find_idx_result do_find_idx(
             }
             const auto& [col, preds] = *it;
             for (const auto& index : sim.list_indexes()) {
+                if (has_forced_index && index.metadata().name() != *forced_index) {
+                    continue;
+                }
                 if (col->name_as_text() == index.target_column() &&
                         are_predicates_supported_by(preds, index) &&
                         index_score(index) > chosen_index_score) {
@@ -1421,6 +1464,16 @@ static do_find_idx_result do_find_idx(
                 }
             }
         });
+    }
+    if (has_forced_index && !chosen_index) {
+        // The index the paged query was using is gone (or no longer applies to
+        // this query), and the query can't be transparently switched to another
+        // plan mid-scan. Fail with a clear error instead of a marshalling error
+        // or crash (issues #18992, #14434).
+        throw exceptions::invalid_request_exception(format(
+                "Cannot continue paged query: secondary index \"{}\" used by this query "
+                "is no longer available. Please retry the query from the beginning.",
+                *forced_index));
     }
     return {chosen_index, chosen_index_restrictions, std::move(chosen_index_predicates)};
 }
@@ -2764,8 +2817,9 @@ analyze_statement_restrictions(
         bool selects_only_static_columns,
         bool for_view,
         bool allow_filtering,
-        check_indexes do_check_indexes) {
-    return make_shared<statement_restrictions>(statement_restrictions::private_tag{}, db, std::move(schema), type, where_clause, ctx, selects_only_static_columns, for_view, allow_filtering, do_check_indexes);
+        check_indexes do_check_indexes,
+        forced_index_opt forced_index) {
+    return seastar::make_shared<statement_restrictions>(statement_restrictions::private_tag{}, db, std::move(schema), type, where_clause, ctx, selects_only_static_columns, for_view, allow_filtering, do_check_indexes, std::move(forced_index));
 }
 
 shared_ptr<const statement_restrictions>

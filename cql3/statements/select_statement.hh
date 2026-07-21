@@ -163,6 +163,15 @@ public:
     db::timeout_clock::duration get_timeout(const service::client_state& state, const query_options& options) const;
 
 protected:
+    // Stamps the query-plan identity (whether a secondary index was used, its
+    // name, and the base table id) onto the paging state returned to the
+    // client, so subsequent pages can keep the same plan even if the set of
+    // available indexes changes between pages (issue #18992). The base-table
+    // implementation records "no secondary index"; view_indexed_table_select_statement
+    // overrides it to record the index it uses. Returns nullptr unchanged.
+    virtual lw_shared_ptr<const service::pager::paging_state> stamp_query_plan(
+            lw_shared_ptr<const service::pager::paging_state> state) const;
+
     uint64_t get_limit(const query_options& options, const std::optional<expr::expression>& limit, bool is_per_partition_limit = false) const;
     static uint64_t get_inner_loop_limit(uint64_t limit, bool is_aggregate);
 
@@ -232,6 +241,9 @@ public:
 private:
     virtual future<::shared_ptr<cql_transport::messages::result_message>> do_execute(query_processor& qp,
             service::query_state& state, const query_options& options) const override;
+
+    virtual lw_shared_ptr<const service::pager::paging_state> stamp_query_plan(
+            lw_shared_ptr<const service::pager::paging_state> state) const override;
             
     future<::shared_ptr<cql_transport::messages::result_message>> actually_do_execute(query_processor& qp,
             service::query_state& state, const query_options& options) const;

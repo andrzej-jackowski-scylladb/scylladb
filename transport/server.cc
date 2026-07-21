@@ -1645,7 +1645,8 @@ process_query_internal(service::client_state& client_state, sharded<cql3::query_
     }
 
     tracing::trace(trace_state, "Parsing a statement");
-    auto prepared = qp.local().get_statement(query.assume_value(), client_state, dialect);
+    auto prepared = qp.local().get_statement(query.assume_value(), client_state, dialect,
+            cql3::query_processor::forced_index_from_paging_state(options.get_paging_state()));
     auto& statement = *prepared->statement;
     auto execute_fut = reclassifying_control_connection_needs_user_service_level(statement, query_state)
             ? query_state.get_service_level_controller().with_user_service_level(query_state.get_client_state().user(),
@@ -1765,6 +1766,16 @@ process_execute_internal(service::client_state& client_state, sharded<cql3::quer
     }
 
     auto stmt = prepared->statement;
+    // When continuing a paged read that recorded which query plan (secondary
+    // index or base table) produced its paging state, the prepared statement's
+    // plan was fixed at prepare time and is not re-derived per page. Re-derive
+    // the statement from its query string with that plan pinned, so an index
+    // created or dropped between pages can't switch the plan and misinterpret
+    // the saved position (issue #18992).
+    if (auto forced_index = cql3::query_processor::forced_index_from_paging_state(options.get_paging_state())) {
+        auto pinned = qp.local().get_statement(stmt->raw_cql_statement, client_state, dialect, std::move(forced_index));
+        stmt = pinned->statement;
+    }
     tracing::trace(query_state.get_trace_state(), "Checking bounds");
     if (stmt->get_bound_terms() != options.get_values_count()) {
         const auto msg = format("Invalid amount of bind variables: expected {:d} received {:d}",

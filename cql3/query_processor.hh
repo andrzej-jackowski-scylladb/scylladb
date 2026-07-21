@@ -50,6 +50,10 @@ class query_state;
 class mapreduce_service;
 class raft_group0_client;
 
+namespace pager {
+class paging_state;
+}
+
 namespace strong_consistency {
 class coordinator;
 }
@@ -525,7 +529,16 @@ public:
     std::unique_ptr<statements::prepared_statement> get_statement(
             utils::chunked_string_view query,
             const service::client_state& client_state,
-            dialect d);
+            dialect d,
+            std::optional<sstring> forced_index = std::nullopt);
+
+    // Derives the query plan to pin when continuing a paged query, from the
+    // paging state produced by the previous page. Returns std::nullopt to not
+    // pin (no paging state, or one from an older Scylla version), an empty
+    // string to force the base-table plan, or the index name to force a
+    // specific secondary index. See issue #18992.
+    static std::optional<sstring> forced_index_from_paging_state(
+            const lw_shared_ptr<service::pager::paging_state>& paging_state);
 
     friend class migration_subscriber;
 

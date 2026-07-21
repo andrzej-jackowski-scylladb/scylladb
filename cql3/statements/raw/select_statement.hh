@@ -98,6 +98,10 @@ private:
     std::optional<expr::expression> _per_partition_limit;
     std::vector<::shared_ptr<cql3::column_identifier::raw>> _group_by_columns;
     std::unique_ptr<cql3::attributes::raw> _attrs;
+    // When set, pins the query plan while continuing a paged query so that
+    // index-set changes between pages don't switch the plan (issue #18992).
+    // See restrictions::forced_index_opt for the meaning of the value.
+    restrictions::forced_index_opt _forced_index;
 public:
     select_statement(cf_name cf_name,
             lw_shared_ptr<const parameters> parameters,
@@ -112,6 +116,11 @@ public:
         return prepare(db, stats, cfg, false);
     }
     std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg, bool for_view);
+
+    // Pins the query plan for continuing a paged query (issue #18992).
+    void set_forced_index(restrictions::forced_index_opt forced_index) {
+        _forced_index = std::move(forced_index);
+    }
 private:
     std::vector<selection::prepared_selector> maybe_jsonize_select_clause(std::vector<selection::prepared_selector> select, data_dictionary::database db, schema_ptr schema);
     ::shared_ptr<const restrictions::statement_restrictions> prepare_restrictions(
@@ -121,7 +130,8 @@ private:
         ::shared_ptr<selection::selection> selection,
         bool for_view = false,
         bool allow_filtering = false,
-        restrictions::check_indexes do_check_indexes = restrictions::check_indexes::yes);
+        restrictions::check_indexes do_check_indexes = restrictions::check_indexes::yes,
+        restrictions::forced_index_opt forced_index = std::nullopt);
 
     /** Returns an expression for the limit or nullopt if no limit is set */
     std::optional<expr::expression> prepare_limit(data_dictionary::database db, prepare_context& ctx, const std::optional<expr::expression>& limit);

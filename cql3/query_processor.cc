@@ -26,6 +26,7 @@
 #include "cql3/CqlParser.hpp"
 #include "cql3/statements/batch_statement.hh"
 #include "cql3/statements/modification_statement.hh"
+#include "cql3/statements/raw/select_statement.hh"
 #include "cql3/util.hh"
 #include "cql3/untyped_result_set.hh"
 #include "db/config.hh"
@@ -625,11 +626,34 @@ query_processor::execute_maybe_with_guard(service::query_state& query_state, ::s
     return execute_with_guard(std::bind_front(exec, std::ref(*this), std::forward<Args>(args)...), std::move(statement), query_state, options);
 }
 
+// Derives the query plan to pin (see get_statement) from the paging state of a
+// query being continued. Returns std::nullopt to not pin (no paging state, or a
+// paging state from an older Scylla version that didn't record the plan), an
+// empty string to force the base-table plan, or the index name to force a
+// specific secondary index. See issue #18992.
+std::optional<sstring> query_processor::forced_index_from_paging_state(
+        const lw_shared_ptr<service::pager::paging_state>& paging_state) {
+    // Simulate a paging state produced by an older Scylla version that predates
+    // the recorded query plan (issue #18992): behave as if no plan was recorded,
+    // so a later page falls back to choosing the plan normally. Used to test the
+    // rolling-upgrade path where a newer node resumes an old node's paging state.
+    if (utils::get_local_injector().enter("paging_state_without_query_plan")) {
+        return std::nullopt;
+    }
+    if (!paging_state || !paging_state->get_base_table_id()) {
+        return std::nullopt;
+    }
+    if (paging_state->get_uses_secondary_index()) {
+        return paging_state->get_index_name();
+    }
+    return sstring();
+}
+
 future<::shared_ptr<result_message>>
 query_processor::execute_direct_without_checking_exception_message(utils::chunked_string_view query_string, service::query_state& query_state, dialect d, query_options& options) {
     log.trace("execute_direct: \"{}\"", query_string);
     tracing::trace(query_state.get_trace_state(), "Parsing a statement");
-    auto p = get_statement(query_string, query_state.get_client_state(), d);
+    auto p = get_statement(query_string, query_state.get_client_state(), d, forced_index_from_paging_state(options.get_paging_state()));
     return execute_direct_statement_without_checking_exception_message(std::move(p), query_state, options);
 }
 
@@ -788,7 +812,7 @@ prepared_cache_key_type query_processor::compute_id(
 }
 
 std::unique_ptr<prepared_statement>
-query_processor::get_statement(utils::chunked_string_view query, const service::client_state& client_state, dialect d) {
+query_processor::get_statement(utils::chunked_string_view query, const service::client_state& client_state, dialect d, std::optional<sstring> forced_index) {
     // Measuring allocation cost requires that no yield points exist
     // between bytes_before and bytes_after. It needs fixing if this
     // function is ever futurized.
@@ -799,6 +823,14 @@ query_processor::get_statement(utils::chunked_string_view query, const service::
     auto cf_stmt = dynamic_cast<raw::cf_statement*>(statement.get());
     if (cf_stmt) {
         cf_stmt->prepare_keyspace(client_state);
+    }
+    // When continuing a paged query, pin the same query plan (index choice)
+    // that produced the paging state so index-set changes between pages don't
+    // switch the plan (issue #18992).
+    if (forced_index) {
+        if (auto* select_stmt = dynamic_cast<raw::select_statement*>(statement.get())) {
+            select_stmt->set_forced_index(std::move(forced_index));
+        }
     }
     ++_stats.prepare_invocations;
     auto p = statement->prepare(_db, _cql_stats, _cql_config);

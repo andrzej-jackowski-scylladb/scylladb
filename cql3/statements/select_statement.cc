@@ -602,7 +602,7 @@ select_statement::execute_without_checking_exception_message_aggregate_or_paged(
         auto meta = [&] () -> shared_ptr<const cql3::metadata> {
             if (!p->is_exhausted()) {
                 auto meta = make_shared<metadata>(*_selection->get_result_metadata());
-                meta->set_paging_state(p->state());
+                meta->set_paging_state(stamp_query_plan(p->state()));
                 return meta;
             } else {
                 return _selection->get_result_metadata();
@@ -620,7 +620,7 @@ select_statement::execute_without_checking_exception_message_aggregate_or_paged(
     }
     std::unique_ptr<cql3::result_set>&& rs = std::move(result_rs).assume_value();
     if (!p->is_exhausted()) {
-        rs->get_metadata().set_paging_state(p->state());
+        rs->get_metadata().set_paging_state(stamp_query_plan(p->state()));
     }
 
     if (needs_post_filtering()) {
@@ -956,7 +956,7 @@ view_indexed_table_select_statement::process_base_query_results(
 {
     if (paging_state) {
         paging_state = generate_view_paging_state_from_base_query_results(paging_state, results, state, options, internal_page_size);
-        _selection->get_result_metadata()->maybe_set_paging_state(std::move(paging_state));
+        _selection->get_result_metadata()->maybe_set_paging_state(stamp_query_plan(std::move(paging_state)));
     }
     return process_results(std::move(results), std::move(cmd), options, now);
 }
@@ -1012,6 +1012,16 @@ select_statement::process_results_complex(foreign_ptr<lw_shared_ptr<query::resul
 
 const ::shared_ptr<const restrictions::statement_restrictions> select_statement::get_restrictions() const {
     return _restrictions;
+}
+
+lw_shared_ptr<const service::pager::paging_state> select_statement::stamp_query_plan(
+        lw_shared_ptr<const service::pager::paging_state> state) const {
+    if (!state) {
+        return state;
+    }
+    auto stamped = make_lw_shared<service::pager::paging_state>(*state);
+    stamped->set_query_plan(false, sstring(), _schema->id());
+    return stamped;
 }
 
 primary_key_select_statement::primary_key_select_statement(schema_ptr schema, uint32_t bound_terms,
@@ -1110,6 +1120,16 @@ view_indexed_table_select_statement::view_indexed_table_select_statement(schema_
         _get_partition_ranges_for_posting_list = [this] (const query_options& options) { return get_partition_ranges_for_global_index_posting_list(options); };
         _get_partition_slice_for_posting_list = [this] (const query_options& options) { return get_partition_slice_for_global_index_posting_list(options); };
     }
+}
+
+lw_shared_ptr<const service::pager::paging_state> view_indexed_table_select_statement::stamp_query_plan(
+        lw_shared_ptr<const service::pager::paging_state> state) const {
+    if (!state) {
+        return state;
+    }
+    auto stamped = make_lw_shared<service::pager::paging_state>(*state);
+    stamped->set_query_plan(true, _index.metadata().name(), _schema->id());
+    return stamped;
 }
 
 template<typename KeyType>
@@ -1944,7 +1964,7 @@ mutation_fragments_select_statement::do_execute(query_processor& qp, service::qu
             auto meta = [&] () -> shared_ptr<const cql3::metadata> {
                 if (!p->is_exhausted()) {
                     auto meta = make_shared<metadata>(*_selection->get_result_metadata());
-                    meta->set_paging_state(p->state());
+                    meta->set_paging_state(stamp_query_plan(p->state()));
                     return meta;
                 } else {
                     return _selection->get_result_metadata();
@@ -1960,7 +1980,7 @@ mutation_fragments_select_statement::do_execute(query_processor& qp, service::qu
     return p->fetch_page_result(page_size, now, timeout).then(wrap_result_to_error_message(
             [this, p = std::move(p)](std::unique_ptr<cql3::result_set>&& rs) {
                 if (!p->is_exhausted()) {
-                    rs->get_metadata().set_paging_state(p->state());
+                    rs->get_metadata().set_paging_state(stamp_query_plan(p->state()));
                 }
 
                 if (needs_post_filtering()) {
@@ -2134,7 +2154,7 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
     }
 
     auto restrictions = prepare_restrictions(db, schema, ctx, selection, for_view, _parameters->allow_filtering() || is_ann_query || has_bm25_ordering,
-            restrictions::check_indexes(!_parameters->is_mutation_fragments()));
+            restrictions::check_indexes(!_parameters->is_mutation_fragments()), _forced_index);
 
     const auto& scoring_restrictions = restrictions->get_scoring_function_restrictions();
 
@@ -2361,11 +2381,12 @@ select_statement::prepare_restrictions(data_dictionary::database db,
                                        ::shared_ptr<selection::selection> selection,
                                        bool for_view,
                                        bool allow_filtering,
-                                       restrictions::check_indexes do_check_indexes)
+                                       restrictions::check_indexes do_check_indexes,
+                                       restrictions::forced_index_opt forced_index)
 {
     try {
         return restrictions::analyze_statement_restrictions(db, schema, statement_type::SELECT, _where_clause, ctx,
-            selection->contains_only_static_columns(), for_view, allow_filtering, do_check_indexes);
+            selection->contains_only_static_columns(), for_view, allow_filtering, do_check_indexes, std::move(forced_index));
     } catch (const exceptions::unrecognized_entity_exception& e) {
         if (contains_alias(e.entity)) {
             throw exceptions::invalid_request_exception(format("Aliases aren't allowed in the WHERE clause (name: '{}')", e.entity));

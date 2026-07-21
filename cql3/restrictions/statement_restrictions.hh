@@ -95,6 +95,13 @@ struct predicate {
 ///have an index-manager, or even a table object.
 using check_indexes = bool_class<class check_indexes_tag>;
 
+/// Pins the query plan when continuing a paged query, so index-set changes
+/// between pages don't switch the plan (issue #18992). std::nullopt means no
+/// pin (choose the plan normally). An empty string forces the base-table plan
+/// (no secondary index). A non-empty string forces the named secondary index;
+/// if that index no longer exists the query fails.
+using forced_index_opt = std::optional<sstring>;
+
 // A function that returns the partition key ranges for a query. It is the solver of
 // WHERE clause fragments such as WHERE token(pk) > 1 or WHERE pk1 IN :list1 AND pk2 IN :list2.
 using get_partition_key_ranges_fn_t = std::function<dht::partition_range_vector (const query_options&)>;
@@ -262,7 +269,8 @@ public:
         bool selects_only_static_columns,
         bool for_view,
         bool allow_filtering,
-        check_indexes do_check_indexes);
+        check_indexes do_check_indexes,
+        forced_index_opt forced_index);
     friend shared_ptr<const statement_restrictions> make_trivial_statement_restrictions(
         schema_ptr schema,
         bool allow_filtering);
@@ -279,7 +287,8 @@ public:
         bool selects_only_static_columns,
         bool for_view,
         bool allow_filtering,
-        check_indexes do_check_indexes);
+        check_indexes do_check_indexes,
+        forced_index_opt forced_index);
 public:
 
     const std::vector<expr::expression>& index_restrictions() const;
@@ -543,7 +552,8 @@ shared_ptr<const statement_restrictions> analyze_statement_restrictions(
         bool selects_only_static_columns,
         bool for_view,
         bool allow_filtering,
-        check_indexes do_check_indexes);
+        check_indexes do_check_indexes,
+        forced_index_opt forced_index = std::nullopt);
 
 shared_ptr<const statement_restrictions> make_trivial_statement_restrictions(
         schema_ptr schema,
