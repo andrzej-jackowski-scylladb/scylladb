@@ -43,6 +43,36 @@ service::pager::paging_state::paging_state(partition_key pk,
 { }
 
 service::pager::paging_state::paging_state(partition_key pk,
+        std::optional<clustering_key> ck,
+        uint32_t rem_low_bits,
+        query_id query_uuid,
+        replicas_per_token_range last_replicas,
+        std::optional<db::read_repair_decision> query_read_repair_decision,
+        uint32_t rows_fetched_for_last_partition_low_bits,
+        uint32_t rem_high_bits,
+        uint32_t rows_fetched_for_last_partition_high_bits,
+        bound_weight ck_weight,
+        partition_region region,
+        bool uses_secondary_index,
+        sstring index_name,
+        table_id base_table_id)
+    : _partition_key(std::move(pk))
+    , _clustering_key(std::move(ck))
+    , _remaining_low_bits(rem_low_bits)
+    , _query_uuid(query_uuid)
+    , _last_replicas(std::move(last_replicas))
+    , _query_read_repair_decision(query_read_repair_decision)
+    , _rows_fetched_for_last_partition_low_bits(rows_fetched_for_last_partition_low_bits)
+    , _remaining_high_bits(rem_high_bits)
+    , _rows_fetched_for_last_partition_high_bits(rows_fetched_for_last_partition_high_bits)
+    , _ck_weight(ck_weight)
+    , _region(region)
+    , _uses_secondary_index(uses_secondary_index)
+    , _index_name(std::move(index_name))
+    , _base_table_id(base_table_id)
+{ }
+
+service::pager::paging_state::paging_state(partition_key pk,
         position_in_partition_view pos,
         uint64_t rem,
         query_id query_uuid,

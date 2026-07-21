@@ -18,6 +18,8 @@
 #include "db/read_repair_decision.hh"
 #include "mutation/position_in_partition.hh"
 #include "locator/host_id.hh"
+#include "schema/schema_fwd.hh"
+#include "seastarx.hh"
 
 namespace service {
 
@@ -40,6 +42,17 @@ private:
     bound_weight _ck_weight = bound_weight::equal;
     partition_region _region = partition_region::partition_start;
 
+    // Query-plan identity, used to keep the same plan across pages of a query
+    // even if the set of available secondary indexes changes between pages
+    // (see issue #18992). _uses_secondary_index tells whether the query used a
+    // secondary index, _index_name names that index (empty otherwise), and
+    // _base_table_id identifies the base table the plan was built for so a
+    // stale cookie can be rejected. Default values mean "unknown plan", which
+    // is what a cookie produced by an older Scylla version deserializes to.
+    bool _uses_secondary_index = false;
+    sstring _index_name;
+    table_id _base_table_id;
+
 public:
     // IDL ctor
     paging_state(partition_key pk,
@@ -53,6 +66,21 @@ public:
             uint32_t rows_fetched_for_last_partition_high_bits,
             bound_weight ck_weight,
             partition_region region);
+
+    paging_state(partition_key pk,
+            std::optional<clustering_key> ck,
+            uint32_t rem,
+            query_id reader_recall_uuid,
+            replicas_per_token_range last_replicas,
+            std::optional<db::read_repair_decision> query_read_repair_decision,
+            uint32_t rows_fetched_for_last_partition,
+            uint32_t remaining_ext,
+            uint32_t rows_fetched_for_last_partition_high_bits,
+            bound_weight ck_weight,
+            partition_region region,
+            bool uses_secondary_index,
+            sstring index_name,
+            table_id base_table_id);
 
     paging_state(partition_key pk,
             position_in_partition_view pos,
@@ -76,6 +104,37 @@ public:
     void set_remaining(uint64_t remaining) {
         _remaining_low_bits = static_cast<uint32_t>(remaining);
         _remaining_high_bits = static_cast<uint32_t>(remaining >> 32);
+    }
+
+    /**
+     * Records which query plan produced this paging state, so that subsequent
+     * pages continue with the same plan regardless of index-set changes.
+     */
+    void set_query_plan(bool uses_secondary_index, sstring index_name, table_id base_table_id) {
+        _uses_secondary_index = uses_secondary_index;
+        _index_name = std::move(index_name);
+        _base_table_id = base_table_id;
+    }
+    /**
+     * Whether the query that produced this paging state used a secondary index.
+     */
+    bool get_uses_secondary_index() const {
+        return _uses_secondary_index;
+    }
+
+    /**
+     * Name of the secondary index used by the query, empty if none was used.
+     */
+    const sstring& get_index_name() const {
+        return _index_name;
+    }
+
+    /**
+     * Id of the base table the query plan was built for. A null id means the
+     * plan identity is unknown (e.g. a cookie from an older Scylla version).
+     */
+    table_id get_base_table_id() const {
+        return _base_table_id;
     }
 
     /**

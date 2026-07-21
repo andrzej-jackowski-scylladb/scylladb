@@ -37,6 +37,9 @@ class paging_state {
     uint32_t get_rows_fetched_for_last_partition_high_bits() [[version 4.3]] = 0;
     bound_weight get_clustering_key_weight() [[version 5.1]] = bound_weight::equal;
     partition_region get_partition_region() [[version 5.1]] = partition_region::clustered;
+    bool get_uses_secondary_index() [[version 2026.3]] = false;
+    sstring get_index_name() [[version 2026.3]] = "";
+    table_id get_base_table_id() [[version 2026.3]] = table_id::create_null_id();
 };
 }
 }
