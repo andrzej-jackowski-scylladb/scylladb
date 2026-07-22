@@ -1820,7 +1820,6 @@ def wait_for_index(cql, keyspace, index_name, timeout_sec=60):
 # pages through the results, and between two pages adds a secondary-index
 # that could be used - or not - for continuing the request, but certainly
 # shouldn't break the request. Reproduces #18992.
-@pytest.mark.xfail(reason="issue #18992")
 def test_paging_and_create_index(cql, test_keyspace):
     count = 20
     with new_test_table(cql, test_keyspace,
@@ -1856,7 +1855,6 @@ def test_paging_and_create_index(cql, test_keyspace):
 # This test is the same as the previous one, but in this test the request
 # filters on both v1 and v2 is already using an index for column v2, and
 # now between the pages we add an index for v1. Reproduces #18992.
-@pytest.mark.xfail(reason="issue #18992")
 def test_paging_and_create_index2(cql, test_keyspace):
     count = 20
     with new_test_table(cql, test_keyspace,
@@ -1894,13 +1892,12 @@ def test_paging_and_create_index2(cql, test_keyspace):
         assert expected == got
 
 # Similar to the previous tests, but here a secondary index which is used
-# for the original request is suddenly deleted between pages. In this test,
-# the query has "ALLOW FILTERING" so the query can continue to work -
-# inefficiently - after the index is deleted. In the following test, we
-# will do the same without ALLOW FILTERING in the query - and we'll see the
-# query can't be resumed after the index is dropped.
-# Reproduces #18992.
-@pytest.mark.xfail(reason="issue #18992")
+# for the original request is suddenly deleted between pages. Even though the
+# query has "ALLOW FILTERING" and could in principle continue without the
+# index, the position saved in the paging state belongs to the dropped
+# index's scan and can't be reinterpreted for a different plan mid-query. So
+# the resumed query fails with a clear error instead of a marshalling error
+# or a crash. Reproduces #18992.
 def test_paging_and_drop_index_allow_filtering(cql, test_keyspace):
     count = 20
     with new_test_table(cql, test_keyspace,
@@ -1921,23 +1918,21 @@ def test_paging_and_drop_index_allow_filtering(cql, test_keyspace):
         assert expected == list(cql.execute(stmt))
         # Finally, run the same paged query again but this time use the page-
         # by-page API, and do a DROP INDEX between the first and second page.
-        # The query still has ALLOW FILTERING to prevent Scylla from rejecting
-        # the query because now (without the index) it needs ALLOW FILTERING.
-        got = []
+        # Because the first page was served using the index, the following
+        # page can't continue after the index is dropped and must fail with a
+        # clear error rather than returning wrong results or crashing.
         r = cql.execute(stmt)
         assert len(r.current_rows) == page_size  # sanity check
-        got.extend(r.current_rows)
         cql.execute(f"DROP INDEX {test_keyspace}.{index_name}")
-        while r.has_more_pages:
-            r = cql.execute(stmt, paging_state=r.paging_state)
-            assert len(r.current_rows) <= page_size # sanity check
-            got.extend(r.current_rows)
-        assert expected == got
+        with pytest.raises(InvalidRequest, match="no longer available"):
+            while r.has_more_pages:
+                r = cql.execute(stmt, paging_state=r.paging_state)
 
 # This test is the same as the previous one, except that it uses a query
-# *without* ALLOW FILTERING while an index existed, and when it attempts
-# to get the next page after a DROP INDEX, we expect the usual error
-# message about ALLOW FILTERING being necessary.
+# *without* ALLOW FILTERING while an index existed. When it attempts to get
+# the next page after a DROP INDEX, the query can't be resumed because the
+# saved paging state belongs to the dropped index's scan, so it fails with a
+# clear error telling the user to retry from the beginning.
 def test_paging_and_drop_index_no_allow_filtering(cql, test_keyspace):
     count = 20
     with new_test_table(cql, test_keyspace,
@@ -1954,21 +1949,160 @@ def test_paging_and_drop_index_no_allow_filtering(cql, test_keyspace):
         expected = list(cql.execute(stmt))
         # Run the same paged query again but this time use the page-by-page
         # API, and do a DROP INDEX between the first and second page.
-        got = []
         r = cql.execute(stmt)
         assert len(r.current_rows) == page_size
-        got.extend(r.current_rows)
         cql.execute(f"DROP INDEX {test_keyspace}.{index_name}")
-        # Because the query does not have "ALLOW FILTERING", even if we
-        # could resume this query it would be inefficient without the
-        # index, so the resumed query should fail with an error about
-        # ALLOW FILTERING being needed.
-        with pytest.raises(InvalidRequest, match="ALLOW FILTERING"):
+        # The first page used the index; after it's dropped the query can't be
+        # resumed with a different plan, so the next page fails with a clear
+        # error rather than a marshalling error or crash.
+        with pytest.raises(InvalidRequest, match="no longer available"):
             while r.has_more_pages:
                 r = cql.execute(stmt, paging_state=r.paging_state)
-                assert len(r.current_rows) <= page_size
+
+# The tests above drive the paged read with SimpleStatement, i.e. the
+# unprepared code path where every page re-parses the query string. The
+# following tests repeat the same scenarios with a prepared statement, where
+# the query plan is derived once at prepare time. Both paths must pin the plan
+# to the one recorded in the paging state so that an index created or dropped
+# between pages can't switch the plan and misinterpret the saved position
+# (issue #18992).
+def test_paging_and_create_index_prepared(cql, test_keyspace):
+    count = 20
+    with new_test_table(cql, test_keyspace,
+            "p int, v int, PRIMARY KEY (p)") as table:
+        insert = cql.prepare(f"INSERT INTO {table} (p, v) VALUES (?, ?)")
+        for i in range(count):
+            cql.execute(insert, [i, 17])
+        page_size = 7
+        select = cql.prepare(f"SELECT p FROM {table} WHERE v=17 ALLOW FILTERING")
+        select.fetch_size = page_size
+        expected = list(cql.execute(select))
+        got = []
+        r = cql.execute(select)
+        assert len(r.current_rows) == page_size
+        got.extend(r.current_rows)
+        index_name = unique_name()
+        cql.execute(f"CREATE INDEX {index_name} ON {table}(v)")
+        wait_for_index(cql, test_keyspace, index_name)
+        while r.has_more_pages:
+            r = cql.execute(select, paging_state=r.paging_state)
+            assert len(r.current_rows) <= page_size
+            got.extend(r.current_rows)
+        assert expected == got
+
+# Prepared-statement version of test_paging_and_create_index2: the query is
+# already using an index for v2, and we add an index for v1 between pages.
+def test_paging_and_create_index2_prepared(cql, test_keyspace):
+    count = 20
+    with new_test_table(cql, test_keyspace,
+            "p int, v1 text, v2 int, PRIMARY KEY (p)") as table:
+        insert = cql.prepare(f"INSERT INTO {table} (p, v1, v2) VALUES (?, ?, ?)")
+        for i in range(count):
+            cql.execute(insert, [i, "dog", 3])
+        page_size = 7
+        index_name2 = unique_name()
+        cql.execute(f"CREATE INDEX {index_name2} ON {table}(v2)")
+        wait_for_index(cql, test_keyspace, index_name2)
+        select = cql.prepare(f"SELECT p FROM {table} WHERE v1='dog' AND v2=3 ALLOW FILTERING")
+        select.fetch_size = page_size
+        expected = list(cql.execute(select))
+        got = []
+        r = cql.execute(select)
+        assert len(r.current_rows) == page_size
+        got.extend(r.current_rows)
+        index_name1 = unique_name()
+        cql.execute(f"CREATE INDEX {index_name1} ON {table}(v1)")
+        wait_for_index(cql, test_keyspace, index_name1)
+        while r.has_more_pages:
+            r = cql.execute(select, paging_state=r.paging_state)
+            assert len(r.current_rows) <= page_size
+            got.extend(r.current_rows)
+        assert expected == got
+
+# Prepared-statement version of test_paging_and_drop_index_allow_filtering.
+# Dropping the index invalidates the prepared statement, so the driver
+# re-prepares it before fetching the next page. The re-prepared query still has
+# ALLOW FILTERING, so preparing it succeeds; it is only when the next page is
+# executed with the saved paging state - which belongs to the dropped index's
+# scan - that the query is refused with a clear error.
+def test_paging_and_drop_index_allow_filtering_prepared(cql, test_keyspace):
+    count = 20
+    with new_test_table(cql, test_keyspace,
+            "p int, v int, PRIMARY KEY (p)") as table:
+        insert = cql.prepare(f"INSERT INTO {table} (p, v) VALUES (?, ?)")
+        for i in range(count):
+            cql.execute(insert, [i, 17])
+        page_size = 7
+        index_name = unique_name()
+        cql.execute(f"CREATE INDEX {index_name} ON {table}(v)")
+        wait_for_index(cql, test_keyspace, index_name)
+        select = cql.prepare(f"SELECT p FROM {table} WHERE v=17 ALLOW FILTERING")
+        select.fetch_size = page_size
+        r = cql.execute(select)
+        assert len(r.current_rows) == page_size
+        cql.execute(f"DROP INDEX {test_keyspace}.{index_name}")
+        with pytest.raises(InvalidRequest, match="no longer available"):
+            while r.has_more_pages:
+                r = cql.execute(select, paging_state=r.paging_state)
+
+# Prepared-statement version of test_paging_and_drop_index_no_allow_filtering.
+# As above, dropping the index invalidates the prepared statement and the
+# driver re-prepares it before the next page. Here the query has no ALLOW
+# FILTERING, so - with the index now gone - re-preparing the statement itself
+# is refused with the usual "use ALLOW FILTERING" error. Either way the paged
+# read cannot be resumed, and the user gets a clear error rather than a
+# marshalling error or a crash.
+def test_paging_and_drop_index_no_allow_filtering_prepared(cql, test_keyspace):
+    count = 20
+    with new_test_table(cql, test_keyspace,
+            "p int, v int, PRIMARY KEY (p)") as table:
+        insert = cql.prepare(f"INSERT INTO {table} (p, v) VALUES (?, ?)")
+        for i in range(count):
+            cql.execute(insert, [i, 17])
+        index_name = unique_name()
+        cql.execute(f"CREATE INDEX {index_name} ON {table}(v)")
+        wait_for_index(cql, test_keyspace, index_name)
+        page_size = 7
+        select = cql.prepare(f"SELECT p FROM {table} WHERE v=17")
+        select.fetch_size = page_size
+        r = cql.execute(select)
+        assert len(r.current_rows) == page_size
+        cql.execute(f"DROP INDEX {test_keyspace}.{index_name}")
+        with pytest.raises(InvalidRequest, match="no longer available|ALLOW FILTERING"):
+            while r.has_more_pages:
+                r = cql.execute(select, paging_state=r.paging_state)
+
+# A paging state produced by an older Scylla version does not record the query
+# plan that produced it (the base table id, whether a secondary index was used,
+# and its name). During a rolling upgrade a later page can be served by a newer
+# node reading such a paging state. The newer node must not reject or
+# mishandle it: with no recorded plan there is nothing to pin, so it falls back
+# to choosing the plan normally, exactly as an old node would - the paged read
+# must still return the correct rows. The "paging_state_without_query_plan"
+# error injection makes the coordinator treat every paging state as if it
+# carried no recorded plan, simulating a paging state serialized by an old
+# node. Reproduces the rolling-upgrade aspect of issue #18992.
+def test_paging_resume_from_pre_plan_paging_state(cql, test_keyspace):
+    count = 20
+    with new_test_table(cql, test_keyspace,
+            "p int, v int, PRIMARY KEY (p)") as table:
+        insert = cql.prepare(f"INSERT INTO {table} (p, v) VALUES (?, ?)")
+        for i in range(count):
+            cql.execute(insert, [i, 17])
+        index_name = unique_name()
+        cql.execute(f"CREATE INDEX {index_name} ON {table}(v)")
+        wait_for_index(cql, test_keyspace, index_name)
+        page_size = 7
+        stmt = SimpleStatement(f"SELECT p FROM {table} WHERE v=17", fetch_size=page_size)
+        expected = list(cql.execute(stmt))
+        with rest_api.scylla_inject_error(cql, "paging_state_without_query_plan"):
+            got = []
+            r = cql.execute(stmt)
+            got.extend(r.current_rows)
+            while r.has_more_pages:
+                r = cql.execute(stmt, paging_state=r.paging_state)
                 got.extend(r.current_rows)
-            assert expected == got
+        assert expected == got
 
 
 # Test index representation in system.* tables
