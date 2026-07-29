@@ -332,3 +332,47 @@ def test_in_bind_marker_name_case_sensitive_column_lowercase_operator(cql, test_
     with new_test_table(cql, test_keyspace, 'p int, "C" int, PRIMARY KEY (p, "C")') as table:
         prepared = cql.prepare(f'SELECT * FROM {table} WHERE p = ? AND "C" IN ?')
         assert [col.name for col in prepared.column_metadata] == ['p', 'in(C)']
+
+# The receiver of a multi-column restriction is already named "(c1,c2)", so
+# wrapping it in the parentheses of the operator nests a second pair. Cassandra
+# has a single pair, and Scylla can be asked for one with
+# cql_multi_column_in_bind_variable_name_has_nested_parentheses; on Cassandra
+# there is nothing to drop, so the fixture is a no-op there.
+@pytest.fixture(scope="function")
+def no_nested_parentheses_in_bind_marker_name(cql):
+    if is_scylla(cql):
+        with config_value_context(cql, 'cql_multi_column_in_bind_variable_name_has_nested_parentheses', 'false'):
+            yield
+    else:
+        yield
+
+# As above, the statements prepared against the temporary table of each test are
+# evicted from the prepared statement cache when the table is dropped.
+def test_multi_column_in_bind_marker_name(cql, test_keyspace, scylla_only):
+    with new_test_table(cql, test_keyspace, "p int, c1 int, c2 int, PRIMARY KEY (p, c1, c2)") as table:
+        prepared = cql.prepare(f"SELECT * FROM {table} WHERE p=? AND (c1,c2) IN ?")
+        assert [col.name for col in prepared.column_metadata] == ['p', 'IN((c1,c2))']
+        x = unique_key_int()
+        cql.execute(f'INSERT INTO {table} (p,c1,c2) VALUES ({x},1,2)')
+        assert [(x,1,2)] == list(cql.execute(prepared, {'p': x, 'IN((c1,c2))': [(1,2)]}))
+
+# The two items are independent: dropping the nested pair leaves the case of the
+# operator alone, so this name is not one Cassandra ever reports.
+def test_multi_column_in_bind_marker_name_no_nested_parentheses(cql, test_keyspace, scylla_only, no_nested_parentheses_in_bind_marker_name):
+    with new_test_table(cql, test_keyspace, "p int, c1 int, c2 int, PRIMARY KEY (p, c1, c2)") as table:
+        prepared = cql.prepare(f"SELECT * FROM {table} WHERE p=? AND (c1,c2) IN ?")
+        assert [col.name for col in prepared.column_metadata] == ['p', 'IN(c1,c2)']
+        x = unique_key_int()
+        cql.execute(f'INSERT INTO {table} (p,c1,c2) VALUES ({x},1,2)')
+        assert [(x,1,2)] == list(cql.execute(prepared, {'p': x, 'IN(c1,c2)': [(1,2)]}))
+
+# Both items together give the name Cassandra reports, which is what this test
+# pins down by running against Cassandra too.
+def test_multi_column_in_bind_marker_name_no_nested_parentheses_lowercase_operator(cql, test_keyspace,
+        lowercase_in_bind_marker_name, no_nested_parentheses_in_bind_marker_name):
+    with new_test_table(cql, test_keyspace, "p int, c1 int, c2 int, PRIMARY KEY (p, c1, c2)") as table:
+        prepared = cql.prepare(f"SELECT * FROM {table} WHERE p=? AND (c1,c2) IN ?")
+        assert [col.name for col in prepared.column_metadata] == ['p', 'in(c1,c2)']
+        x = unique_key_int()
+        cql.execute(f'INSERT INTO {table} (p,c1,c2) VALUES ({x},1,2)')
+        assert [(x,1,2)] == list(cql.execute(prepared, {'p': x, 'in(c1,c2)': [(1,2)]}))
