@@ -18,6 +18,7 @@
 #include "cql3/maps.hh"
 #include "cql3/sets.hh"
 #include "cql3/user_types.hh"
+#include "db/config.hh"
 #include "types/list.hh"
 #include "types/set.hh"
 #include "types/map.hh"
@@ -2181,12 +2182,20 @@ static lw_shared_ptr<column_specification> get_lhs_receiver(const expression& pr
 
 // Given type of LHS and the operation finds the expected type of RHS.
 // The type will be the same as LHS for simple operations like =, but it will be different for more complex ones like IN or CONTAINS.
-static lw_shared_ptr<column_specification> get_rhs_receiver(lw_shared_ptr<column_specification>& lhs_receiver, oper_t oper) {
+static lw_shared_ptr<column_specification> get_rhs_receiver(lw_shared_ptr<column_specification>& lhs_receiver, oper_t oper, data_dictionary::database db) {
     const data_type lhs_type = lhs_receiver->type->underlying_type();
 
     if (oper == oper_t::IN || oper == oper_t::NOT_IN) {
         data_type rhs_receiver_type = list_type_impl::get_instance(std::move(lhs_type), false);
-        auto in_name = ::make_shared<column_identifier>(format("{}({})", oper, lhs_receiver->name->text()), true);
+        // Cassandra spells the operator in lowercase. Applications bind by this name,
+        // so the case cannot change under them and is configurable.
+        std::string_view oper_name;
+        if (db.get_config().cql_in_bind_variable_name_uses_uppercase_operator()) {
+            oper_name = (oper == oper_t::IN) ? "IN" : "NOT IN";
+        } else {
+            oper_name = (oper == oper_t::IN) ? "in" : "not in";
+        }
+        auto in_name = ::make_shared<column_identifier>(fmt::format("{}({})", oper_name, lhs_receiver->name->text()), true);
         return make_lw_shared<column_specification>(lhs_receiver->ks_name,
                                                     lhs_receiver->cf_name,
                                                     in_name,
@@ -2312,7 +2321,7 @@ binary_operator prepare_binary_operator(binary_operator binop, data_dictionary::
         throw exceptions::invalid_request_exception(fmt::format("Duration type is unordered for {}", lhs_receiver->name));
     }
 
-    lw_shared_ptr<column_specification> rhs_receiver = get_rhs_receiver(lhs_receiver, binop.op);
+    lw_shared_ptr<column_specification> rhs_receiver = get_rhs_receiver(lhs_receiver, binop.op, db);
     expression prepared_rhs = prepare_expression(binop.rhs, db, table_schema.ks_name(), &table_schema, rhs_receiver);
 
     // IS NOT NULL requires an additional check that the RHS is NULL.
