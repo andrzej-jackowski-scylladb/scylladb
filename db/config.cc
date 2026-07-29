@@ -1603,6 +1603,8 @@ db::config::config(std::shared_ptr<db::extensions> exts)
             "A bind variable that appears twice in a CQL query refers to a single variable (if false, no name matching is performed).")
     , cql_in_bind_variable_name_uses_uppercase_operator(this, "cql_in_bind_variable_name_uses_uppercase_operator", liveness::LiveUpdate, value_status::Used, true,
             "Name the bind variable of an IN restriction \"IN(column)\" (if false, the operator is spelled in lowercase, \"in(column)\", the way Cassandra does).")
+    , cql_multi_column_in_bind_variable_name_has_nested_parentheses(this, "cql_multi_column_in_bind_variable_name_has_nested_parentheses", liveness::LiveUpdate, value_status::Used, true,
+            "Name the bind variable of a multi-column IN restriction \"IN((c1,c2))\", keeping the parentheses of the column list inside those of the operator (if false, a single pair is used, \"IN(c1,c2)\", the way Cassandra does).")
     , max_relations_in_where_clause(this, "max_relations_in_where_clause", liveness::LiveUpdate, value_status::Used, 100,
             "Maximum number of relations allowed in a WHERE clause. Queries with too many relations can cause quadratic complexity.")
     , select_internal_page_size(this, "select_internal_page_size", liveness::LiveUpdate, value_status::Used, 10000,

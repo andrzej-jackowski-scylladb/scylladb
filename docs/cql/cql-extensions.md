@@ -395,14 +395,21 @@ Applications that bind this variable by name, and want the Cassandra spelling, c
 by setting the configuration item `cql_in_bind_variable_name_uses_uppercase_operator` to
 `false`.
 
+A multi-column restriction (example: `WHERE (c1,c2) IN ?`) names its bind variable after
+the whole column list, which carries parentheses of its own, so ScyllaDB ends up with a
+nested pair, `IN((c1,c2))`, where Cassandra writes the columns directly between the
+parentheses of the operator, `in(c1,c2)`. Setting the configuration item
+`cql_multi_column_in_bind_variable_name_has_nested_parentheses` to `false` drops the extra
+pair. The two items are independent, so reproducing the Cassandra name takes both.
+
 The name is chosen when a statement is prepared, and it is not part of the prepared
-statement cache key. Changing the item therefore only affects statements prepared after
+statement cache key. Changing either item therefore only affects statements prepared after
 the change: a statement that is already in a node's prepared statement cache keeps reporting
 the name it was prepared under, and nodes that have not been updated yet keep reporting the
-old name. The item is best set in `scylla.yaml` before applications start preparing
+old name. The items are best set in `scylla.yaml` before applications start preparing
 statements.
 
-To change it on a live cluster, set it on every node, then have applications prepare their
+To change one on a live cluster, set it on every node, then have applications prepare their
 statements again, for example by reconnecting. Until both are done, different coordinators
 can report different names for the same query, so applications should be able to bind either
 spelling while the change is being rolled out.

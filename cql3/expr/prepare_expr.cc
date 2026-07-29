@@ -2182,7 +2182,7 @@ static lw_shared_ptr<column_specification> get_lhs_receiver(const expression& pr
 
 // Given type of LHS and the operation finds the expected type of RHS.
 // The type will be the same as LHS for simple operations like =, but it will be different for more complex ones like IN or CONTAINS.
-static lw_shared_ptr<column_specification> get_rhs_receiver(lw_shared_ptr<column_specification>& lhs_receiver, oper_t oper, data_dictionary::database db) {
+static lw_shared_ptr<column_specification> get_rhs_receiver(lw_shared_ptr<column_specification>& lhs_receiver, const expression& prepared_lhs, oper_t oper, data_dictionary::database db) {
     const data_type lhs_type = lhs_receiver->type->underlying_type();
 
     if (oper == oper_t::IN || oper == oper_t::NOT_IN) {
@@ -2195,7 +2195,14 @@ static lw_shared_ptr<column_specification> get_rhs_receiver(lw_shared_ptr<column
         } else {
             oper_name = (oper == oper_t::IN) ? "in" : "not in";
         }
-        auto in_name = ::make_shared<column_identifier>(fmt::format("{}({})", oper_name, lhs_receiver->name->text()), true);
+        // The receiver of a multi-column restriction is already named "(c1,c2)", so
+        // wrapping it in the parentheses of the operator nests a second pair. The name
+        // is bound by applications too, so dropping the extra pair is configurable.
+        auto name_text = (is<tuple_constructor>(prepared_lhs)
+                    && !db.get_config().cql_multi_column_in_bind_variable_name_has_nested_parentheses())
+                ? fmt::format("{}{}", oper_name, lhs_receiver->name->text())
+                : fmt::format("{}({})", oper_name, lhs_receiver->name->text());
+        auto in_name = ::make_shared<column_identifier>(std::move(name_text), true);
         return make_lw_shared<column_specification>(lhs_receiver->ks_name,
                                                     lhs_receiver->cf_name,
                                                     in_name,
@@ -2321,7 +2328,7 @@ binary_operator prepare_binary_operator(binary_operator binop, data_dictionary::
         throw exceptions::invalid_request_exception(fmt::format("Duration type is unordered for {}", lhs_receiver->name));
     }
 
-    lw_shared_ptr<column_specification> rhs_receiver = get_rhs_receiver(lhs_receiver, binop.op, db);
+    lw_shared_ptr<column_specification> rhs_receiver = get_rhs_receiver(lhs_receiver, prepared_lhs, binop.op, db);
     expression prepared_rhs = prepare_expression(binop.rhs, db, table_schema.ks_name(), &table_schema, rhs_receiver);
 
     // IS NOT NULL requires an additional check that the RHS is NULL.
