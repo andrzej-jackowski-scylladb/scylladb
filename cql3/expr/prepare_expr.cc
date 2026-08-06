@@ -42,7 +42,8 @@ static expression coerce_to(expression e, const data_type& target, data_dictiona
 
 static bool is_widenable_to(const data_type& from, const data_type& to);
 
-// Memoization that is active only for the duration of a single top-level prepare.
+// The state of a single top-level prepare, threaded through the whole recursion.
+// One of the things it carries is the memoization described below.
 //
 // Resolving an unresolved nested function call against a candidate parameter type
 // is recursive. When a multi-overload function has an argument that is itself an
@@ -51,7 +52,7 @@ static bool is_widenable_to(const data_type& from, const data_type& to);
 // exponential in the nesting depth. Caching the result of such a probe for a given
 // (call, receiver type) collapses that back to linear.
 //
-// A prepare_memo is created on the stack by the public prepare entry points and
+// A prepare_state is created on the stack by the public prepare entry points and
 // threaded by reference through the recursive prepare; it is freed when that entry
 // point returns, so nothing is retained between independent prepare calls. Being a
 // parameter rather than a global, its lifetime is exactly the prepare it belongs to,
@@ -78,31 +79,31 @@ struct call_probe_key_hash {
     }
 };
 
-struct prepare_memo {
+struct prepare_state {
     // Test-only: when false, probes are neither looked up nor stored, so a test can
     // observe the un-memoized (exponential) probing cost for comparison. The constructor
     // seeds it from the test switch (always true in release).
-    bool enabled = true;
+    bool memo_enabled = true;
     std::unordered_map<call_probe_key, assignment_testable::test_result, call_probe_key_hash> test_assignment_function_call;
 
-    prepare_memo();
+    prepare_state();
 };
 
-// Memo-threaded overloads of the public entry points. The public (memo-less) functions
-// create a prepare_memo on the stack and delegate here; the recursive prepare passes the
-// same memo by reference, so it is never global.
-static std::optional<expression> try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_memo& memo, bool allow_unresolved = false);
-static assignment_testable::test_result test_assignment(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo);
-static expression prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo, const dialect* d = nullptr);
-static assignment_testable::test_result test_assignment_all(const std::vector<expression>& to_test, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo);
-static ::shared_ptr<assignment_testable> as_assignment_testable(expression e, std::optional<data_type> type_opt, prepare_memo& memo);
+// State-threaded overloads of the public entry points. The public (state-less) functions
+// create a prepare_state on the stack and delegate here; the recursive prepare passes the
+// same state by reference, so it is never global.
+static std::optional<expression> try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, bool allow_unresolved = false);
+static assignment_testable::test_result test_assignment(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state);
+static expression prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, const dialect* d = nullptr);
+static assignment_testable::test_result test_assignment_all(const std::vector<expression>& to_test, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state);
+static ::shared_ptr<assignment_testable> as_assignment_testable(expression e, std::optional<data_type> type_opt, prepare_state& state);
 
 // A relation is named after the dialect it is prepared under, so the dialect travels along
 // the expressions that can contain a relation and nowhere else - what a relation is built
 // from is an ordinary expression, which cannot contain one. The dialect is null when
 // preparing an expression that is not allowed to contain a relation, which then refuses one
 // rather than naming it under a dialect nobody chose.
-static std::optional<expression> try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_memo& memo, const dialect* d);
+static std::optional<expression> try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, const dialect* d);
 static std::optional<expression> prepare_relation(const binary_operator& binop, data_dictionary::database db, const schema* schema_opt, const lw_shared_ptr<column_specification>& receiver, const dialect* d);
 
 struct inferred_elements {
@@ -113,12 +114,12 @@ struct inferred_elements {
 template <typename Project>
 static std::optional<inferred_elements>
 prepare_and_infer_collection_elements(std::span<const expression> elements,
-        data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, Project&& project, prepare_memo& memo) {
+        data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, Project&& project, prepare_state& state) {
     std::optional<data_type> result;
     std::vector<expression> prepared;
     prepared.reserve(elements.size());
     for (const expression& e : elements) {
-        std::optional<expression> p = try_prepare_expression(project(e), db, keyspace, schema_opt, nullptr, /*infer_default=*/true, memo);
+        std::optional<expression> p = try_prepare_expression(project(e), db, keyspace, schema_opt, nullptr, /*infer_default=*/true, state);
         if (!p) {
             return std::nullopt;
         }
@@ -219,7 +220,7 @@ usertype_field_spec_of(const column_specification& column, size_t field) {
 
 static
 void
-usertype_constructor_validate_assignable_to(const usertype_constructor& u, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+usertype_constructor_validate_assignable_to(const usertype_constructor& u, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     if (!receiver.type->is_user_type()) {
         throw exceptions::invalid_request_exception(format("Invalid user type literal for {} of type {}", *receiver.name, receiver.type->as_cql3_type()));
     }
@@ -232,7 +233,7 @@ usertype_constructor_validate_assignable_to(const usertype_constructor& u, data_
         }
         const expression& value = u.elements.at(field);
         auto&& field_spec = usertype_field_spec_of(receiver, i);
-        if (!assignment_testable::is_assignable(test_assignment(value, db, keyspace, schema_opt, *field_spec, memo))) {
+        if (!assignment_testable::is_assignable(test_assignment(value, db, keyspace, schema_opt, *field_spec, state))) {
             throw exceptions::invalid_request_exception(format("Invalid user type literal for {}: field {} is not of type {}", *receiver.name, field, field_spec->type->as_cql3_type()));
         }
     }
@@ -240,9 +241,9 @@ usertype_constructor_validate_assignable_to(const usertype_constructor& u, data_
 
 static
 assignment_testable::test_result
-usertype_constructor_test_assignment(const usertype_constructor& u, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+usertype_constructor_test_assignment(const usertype_constructor& u, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     try {
-        usertype_constructor_validate_assignable_to(u, db, keyspace, schema_opt, receiver, memo);
+        usertype_constructor_validate_assignable_to(u, db, keyspace, schema_opt, receiver, state);
         return assignment_testable::test_result::WEAKLY_ASSIGNABLE;
     } catch (exceptions::invalid_request_exception& e) {
         return assignment_testable::test_result::NOT_ASSIGNABLE;
@@ -251,11 +252,11 @@ usertype_constructor_test_assignment(const usertype_constructor& u, data_diction
 
 static
 std::optional<expression>
-usertype_constructor_prepare_expression(const usertype_constructor& u, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo) {
+usertype_constructor_prepare_expression(const usertype_constructor& u, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state) {
     if (!receiver) {
         return std::nullopt; // cannot infer type from {field: value}
     }
-    usertype_constructor_validate_assignable_to(u, db, keyspace, schema_opt, *receiver, memo);
+    usertype_constructor_validate_assignable_to(u, db, keyspace, schema_opt, *receiver, state);
     auto&& ut = static_pointer_cast<const user_type_impl>(receiver->type);
     bool all_terminal = true;
 
@@ -269,7 +270,7 @@ usertype_constructor_prepare_expression(const usertype_constructor& u, data_dict
             raw = iraw->second;
             ++found_values;
         }
-        expression value = prepare_expression(raw, db, keyspace, schema_opt, usertype_field_spec_of(*receiver, i), memo);
+        expression value = prepare_expression(raw, db, keyspace, schema_opt, usertype_field_spec_of(*receiver, i), state);
 
         if (!is<constant>(value)) {
             all_terminal = false;
@@ -327,7 +328,7 @@ map_value_spec_of(const column_specification& column) {
 
 static
 void
-map_validate_assignable_to(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+map_validate_assignable_to(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     if (!receiver.type->without_reversed().is_map()) {
         throw exceptions::invalid_request_exception(format("Invalid map literal for {} of type {}", *receiver.name, receiver.type->as_cql3_type()));
     }
@@ -338,10 +339,10 @@ map_validate_assignable_to(const collection_constructor& c, data_dictionary::dat
         if (entry_tuple.elements.size() != 2) {
             on_internal_error(expr_logger, "map element is not a tuple of arity 2");
         }
-        if (!is_assignable(test_assignment(entry_tuple.elements[0], db, keyspace, schema_opt, *key_spec, memo))) {
+        if (!is_assignable(test_assignment(entry_tuple.elements[0], db, keyspace, schema_opt, *key_spec, state))) {
             throw exceptions::invalid_request_exception(format("Invalid map literal for {}: key {} is not of type {}", *receiver.name, entry_tuple.elements[0], key_spec->type->as_cql3_type()));
         }
-        if (!is_assignable(test_assignment(entry_tuple.elements[1], db, keyspace, schema_opt, *value_spec, memo))) {
+        if (!is_assignable(test_assignment(entry_tuple.elements[1], db, keyspace, schema_opt, *value_spec, state))) {
             throw exceptions::invalid_request_exception(format("Invalid map literal for {}: value {} is not of type {}", *receiver.name, entry_tuple.elements[1], value_spec->type->as_cql3_type()));
         }
     }
@@ -349,7 +350,7 @@ map_validate_assignable_to(const collection_constructor& c, data_dictionary::dat
 
 static
 assignment_testable::test_result
-map_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+map_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     if (!dynamic_pointer_cast<const map_type_impl>(receiver.type)) {
         return assignment_testable::test_result::NOT_ASSIGNABLE;
     }
@@ -366,8 +367,8 @@ map_test_assignment(const collection_constructor& c, data_dictionary::database d
         if (entry_tuple.elements.size() != 2) {
             on_internal_error(expr_logger, "map element is not a tuple of arity 2");
         }
-        auto t1 = test_assignment(entry_tuple.elements[0], db, keyspace, schema_opt, *key_spec, memo);
-        auto t2 = test_assignment(entry_tuple.elements[1], db, keyspace, schema_opt, *value_spec, memo);
+        auto t1 = test_assignment(entry_tuple.elements[0], db, keyspace, schema_opt, *key_spec, state);
+        auto t2 = test_assignment(entry_tuple.elements[1], db, keyspace, schema_opt, *value_spec, state);
         if (t1 == assignment_testable::test_result::NOT_ASSIGNABLE || t2 == assignment_testable::test_result::NOT_ASSIGNABLE)
             return assignment_testable::test_result::NOT_ASSIGNABLE;
         if (t1 != assignment_testable::test_result::EXACT_MATCH || t2 != assignment_testable::test_result::EXACT_MATCH)
@@ -378,15 +379,15 @@ map_test_assignment(const collection_constructor& c, data_dictionary::database d
 
 static
 std::optional<expression>
-map_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_memo& memo) {
+map_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state) {
     if (!receiver) {
         if (!infer_default) {
             return std::nullopt;
         }
         auto key_of = [] (const expression& e) -> const expression& { return expr::as<tuple_constructor>(e).elements[0]; };
         auto value_of = [] (const expression& e) -> const expression& { return expr::as<tuple_constructor>(e).elements[1]; };
-        auto keys = prepare_and_infer_collection_elements(c.elements, db, keyspace, schema_opt, key_of, memo);
-        auto values = prepare_and_infer_collection_elements(c.elements, db, keyspace, schema_opt, value_of, memo);
+        auto keys = prepare_and_infer_collection_elements(c.elements, db, keyspace, schema_opt, key_of, state);
+        auto values = prepare_and_infer_collection_elements(c.elements, db, keyspace, schema_opt, value_of, state);
         if (!keys || !values) {
             return std::nullopt;
         }
@@ -416,7 +417,7 @@ map_prepare_expression(const collection_constructor& c, data_dictionary::databas
         }
         return map_value;
     }
-    map_validate_assignable_to(c, db, keyspace, schema_opt, *receiver, memo);
+    map_validate_assignable_to(c, db, keyspace, schema_opt, *receiver, state);
 
     auto key_spec = maps::key_spec_of(*receiver);
     auto value_spec = maps::value_spec_of(*receiver);
@@ -443,8 +444,8 @@ map_prepare_expression(const collection_constructor& c, data_dictionary::databas
         if (entry_tuple.elements.size() != 2) {
             on_internal_error(expr_logger, "map element is not a tuple of arity 2");
         }
-        expression k = prepare_expression(entry_tuple.elements[0], db, keyspace, schema_opt, key_spec, memo);
-        expression v = prepare_expression(entry_tuple.elements[1], db, keyspace, schema_opt, value_spec, memo);
+        expression k = prepare_expression(entry_tuple.elements[0], db, keyspace, schema_opt, key_spec, state);
+        expression v = prepare_expression(entry_tuple.elements[1], db, keyspace, schema_opt, value_spec, state);
 
         // Check if one of values contains a nonpure function
         if (!is<constant>(k) || !is<constant>(v)) {
@@ -479,7 +480,7 @@ set_value_spec_of(const column_specification& column) {
 
 static
 void
-set_validate_assignable_to(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+set_validate_assignable_to(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     if (!receiver.type->without_reversed().is_set()) {
         // We've parsed empty maps as a set literal to break the ambiguity so
         // handle that case now
@@ -492,7 +493,7 @@ set_validate_assignable_to(const collection_constructor& c, data_dictionary::dat
 
     auto&& value_spec = set_value_spec_of(receiver);
     for (auto& e: c.elements) {
-        if (!is_assignable(test_assignment(e, db, keyspace, schema_opt, *value_spec, memo))) {
+        if (!is_assignable(test_assignment(e, db, keyspace, schema_opt, *value_spec, state))) {
             throw exceptions::invalid_request_exception(format("Invalid set literal for {}: value {} is not of type {}", *receiver.name, e, value_spec->type->as_cql3_type()));
         }
     }
@@ -500,7 +501,7 @@ set_validate_assignable_to(const collection_constructor& c, data_dictionary::dat
 
 static
 assignment_testable::test_result
-set_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+set_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     if (!receiver.type->without_reversed().is_set()) {
         // We've parsed empty maps as a set literal to break the ambiguity so handle that case now
         if (dynamic_pointer_cast<const map_type_impl>(receiver.type) && c.elements.empty()) {
@@ -516,18 +517,18 @@ set_test_assignment(const collection_constructor& c, data_dictionary::database d
     }
 
     auto&& value_spec = set_value_spec_of(receiver);
-    return test_assignment_all(c.elements, db, keyspace, schema_opt, *value_spec, memo);
+    return test_assignment_all(c.elements, db, keyspace, schema_opt, *value_spec, state);
 }
 
 static
 std::optional<expression>
-set_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_memo& memo) {
+set_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state) {
     if (!receiver) {
         if (!infer_default) {
             return std::nullopt;
         }
         auto identity = [] (const expression& e) -> const expression& { return e; };
-        auto inferred = prepare_and_infer_collection_elements(c.elements, db, keyspace, schema_opt, identity, memo);
+        auto inferred = prepare_and_infer_collection_elements(c.elements, db, keyspace, schema_opt, identity, state);
         if (!inferred) {
             return std::nullopt;
         }
@@ -535,7 +536,7 @@ set_prepare_expression(const collection_constructor& c, data_dictionary::databas
                 set_type_impl::get_instance(inferred->element_type, false),
                 inferred->element_type, std::move(inferred->prepared), db, keyspace);
     }
-    set_validate_assignable_to(c, db, keyspace, schema_opt, *receiver, memo);
+    set_validate_assignable_to(c, db, keyspace, schema_opt, *receiver, state);
 
     if (c.elements.empty()) {
 
@@ -565,7 +566,7 @@ set_prepare_expression(const collection_constructor& c, data_dictionary::databas
     bool all_terminal = true;
     for (auto& e : c.elements)
     {
-        expression elem = prepare_expression(e, db, keyspace, schema_opt, value_spec, memo);
+        expression elem = prepare_expression(e, db, keyspace, schema_opt, value_spec, state);
 
         if (!is<constant>(elem)) {
             all_terminal = false;
@@ -597,14 +598,14 @@ list_value_spec_of(const column_specification& column) {
 
 static
 void
-list_validate_assignable_to(const collection_constructor& c, data_dictionary::database db, const sstring keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+list_validate_assignable_to(const collection_constructor& c, data_dictionary::database db, const sstring keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     if (!receiver.type->without_reversed().is_list()) {
         throw exceptions::invalid_request_exception(format("Invalid list literal for {} of type {}",
                 *receiver.name, receiver.type->as_cql3_type()));
     }
     auto&& value_spec = list_value_spec_of(receiver);
     for (auto& e : c.elements) {
-        if (!is_assignable(test_assignment(e, db, keyspace, schema_opt, *value_spec, memo))) {
+        if (!is_assignable(test_assignment(e, db, keyspace, schema_opt, *value_spec, state))) {
             throw exceptions::invalid_request_exception(format("Invalid list literal for {}: value {} is not of type {}",
                     *receiver.name, e, value_spec->type->as_cql3_type()));
         }
@@ -613,21 +614,21 @@ list_validate_assignable_to(const collection_constructor& c, data_dictionary::da
 
 static
 assignment_testable::test_result
-list_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+list_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     // If there is no elements, we can't say it's an exact match (an empty list if fundamentally polymorphic).
     if (c.elements.empty()) {
         return assignment_testable::test_result::WEAKLY_ASSIGNABLE;
     }
 
     auto&& value_spec = list_value_spec_of(receiver);
-    return test_assignment_all(c.elements, db, keyspace, schema_opt, *value_spec, memo);
+    return test_assignment_all(c.elements, db, keyspace, schema_opt, *value_spec, state);
 }
 
 
 static
 std::optional<expression>
-list_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo) {
-    list_validate_assignable_to(c, db, keyspace, schema_opt, *receiver, memo);
+list_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state) {
+    list_validate_assignable_to(c, db, keyspace, schema_opt, *receiver, state);
 
     // In Cassandra, an empty (unfrozen) map/set/list is equivalent to the column being null. In
     // other words a non-frozen collection only exists if it has elements. Return nullptr right
@@ -642,7 +643,7 @@ list_prepare_expression(const collection_constructor& c, data_dictionary::databa
     values.reserve(c.elements.size());
     bool all_terminal = true;
     for (auto& e : c.elements) {
-        expression elem = prepare_expression(e, db, keyspace, schema_opt, value_spec, memo);
+        expression elem = prepare_expression(e, db, keyspace, schema_opt, value_spec, state);
 
         if (!is<constant>(elem)) {
             all_terminal = false;
@@ -671,7 +672,7 @@ vector_value_spec_of(const column_specification& column) {
 
 static
 void
-vector_validate_assignable_to(const collection_constructor& c, data_dictionary::database db, const sstring keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+vector_validate_assignable_to(const collection_constructor& c, data_dictionary::database db, const sstring keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     auto vt = dynamic_pointer_cast<const vector_type_impl>(receiver.type->underlying_type());
     if (!vt) {
         throw exceptions::invalid_request_exception(format("Invalid vector type literal for {} of type {}", *receiver.name, receiver.type->as_cql3_type()));
@@ -690,7 +691,7 @@ vector_validate_assignable_to(const collection_constructor& c, data_dictionary::
 
     auto&& value_spec = vector_value_spec_of(receiver);
     for (auto& e : c.elements) {
-        if (!is_assignable(test_assignment(e, db, keyspace, schema_opt, *value_spec, memo))) {
+        if (!is_assignable(test_assignment(e, db, keyspace, schema_opt, *value_spec, state))) {
             throw exceptions::invalid_request_exception(format("Invalid vector literal for {}: value {} is not of type {}",
                     *receiver.name, e, value_spec->type->as_cql3_type()));
         }
@@ -699,27 +700,27 @@ vector_validate_assignable_to(const collection_constructor& c, data_dictionary::
 
 static
 assignment_testable::test_result
-vector_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+vector_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     // If there is no elements, we can't say it's an exact match (an empty vector if fundamentally polymorphic).
     if (c.elements.empty()) {
         return assignment_testable::test_result::WEAKLY_ASSIGNABLE;
     }
 
     auto&& value_spec = vector_value_spec_of(receiver);
-    return test_assignment_all(c.elements, db, keyspace, schema_opt, *value_spec, memo);
+    return test_assignment_all(c.elements, db, keyspace, schema_opt, *value_spec, state);
 }
 
 static
 std::optional<expression>
-vector_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo) {
-    vector_validate_assignable_to(c, db, keyspace, schema_opt, *receiver, memo);
+vector_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state) {
+    vector_validate_assignable_to(c, db, keyspace, schema_opt, *receiver, state);
 
     auto&& value_spec = vector_value_spec_of(*receiver);
     std::vector<expression> values;
     values.reserve(c.elements.size());
     bool all_terminal = true;
     for (auto& e : c.elements) {
-        expression elem = prepare_expression(e, db, keyspace, schema_opt, value_spec, memo);
+        expression elem = prepare_expression(e, db, keyspace, schema_opt, value_spec, state);
 
         if (!is<constant>(elem)) {
             all_terminal = false;
@@ -742,11 +743,11 @@ vector_prepare_expression(const collection_constructor& c, data_dictionary::data
 
 static
 assignment_testable::test_result
-list_or_vector_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+list_or_vector_test_assignment(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     if (dynamic_pointer_cast<const vector_type_impl>(receiver.type)) {
-        return vector_test_assignment(c, db, keyspace, schema_opt, receiver, memo);
+        return vector_test_assignment(c, db, keyspace, schema_opt, receiver, state);
     } else if (dynamic_pointer_cast<const list_type_impl>(receiver.type)) {
-        return list_test_assignment(c, db, keyspace, schema_opt, receiver, memo);
+        return list_test_assignment(c, db, keyspace, schema_opt, receiver, state);
     } else {
         return assignment_testable::test_result::NOT_ASSIGNABLE;
     }
@@ -754,7 +755,7 @@ list_or_vector_test_assignment(const collection_constructor& c, data_dictionary:
 
 static
 std::optional<expression>
-list_or_vector_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_memo& memo) {
+list_or_vector_prepare_expression(const collection_constructor& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state) {
     if (!receiver) {
         if (!infer_default) {
             return std::nullopt;
@@ -763,7 +764,7 @@ list_or_vector_prepare_expression(const collection_constructor& c, data_dictiona
         // literal is inferred as a list, built directly from the elements prepared
         // during inference rather than preparing them a second time.
         auto identity = [] (const expression& e) -> const expression& { return e; };
-        auto inferred = prepare_and_infer_collection_elements(c.elements, db, keyspace, schema_opt, identity, memo);
+        auto inferred = prepare_and_infer_collection_elements(c.elements, db, keyspace, schema_opt, identity, state);
         if (!inferred) {
             return std::nullopt;
         }
@@ -774,9 +775,9 @@ list_or_vector_prepare_expression(const collection_constructor& c, data_dictiona
 
     // We do not check if the receiver is a list because it is checked later in the list_prepare_expression.
     if (receiver->type->is_vector()) {
-        return vector_prepare_expression(c, db, keyspace, schema_opt, receiver, memo);
+        return vector_prepare_expression(c, db, keyspace, schema_opt, receiver, state);
     } else {
-        return list_prepare_expression(c, db, keyspace, schema_opt, receiver, memo);
+        return list_prepare_expression(c, db, keyspace, schema_opt, receiver, state);
     }
 }
 
@@ -792,7 +793,7 @@ component_spec_of(const column_specification& column, size_t component) {
 
 static
 void
-tuple_constructor_validate_assignable_to(const tuple_constructor& tc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+tuple_constructor_validate_assignable_to(const tuple_constructor& tc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     auto tt = dynamic_pointer_cast<const tuple_type_impl>(receiver.type->underlying_type());
     if (!tt) {
         throw exceptions::invalid_request_exception(format("Invalid tuple type literal for {} of type {}", *receiver.name, receiver.type->as_cql3_type()));
@@ -805,7 +806,7 @@ tuple_constructor_validate_assignable_to(const tuple_constructor& tc, data_dicti
 
         auto&& value = tc.elements[i];
         auto&& spec = component_spec_of(receiver, i);
-        if (!assignment_testable::is_assignable(test_assignment(value, db, keyspace, schema_opt, *spec, memo))) {
+        if (!assignment_testable::is_assignable(test_assignment(value, db, keyspace, schema_opt, *spec, state))) {
             throw exceptions::invalid_request_exception(format("Invalid tuple literal for {}: component {:d} is not of type {}", *receiver.name, i, spec->type->as_cql3_type()));
         }
     }
@@ -813,9 +814,9 @@ tuple_constructor_validate_assignable_to(const tuple_constructor& tc, data_dicti
 
 static
 assignment_testable::test_result
-tuple_constructor_test_assignment(const tuple_constructor& tc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+tuple_constructor_test_assignment(const tuple_constructor& tc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     try {
-        tuple_constructor_validate_assignable_to(tc, db, keyspace, schema_opt, receiver, memo);
+        tuple_constructor_validate_assignable_to(tc, db, keyspace, schema_opt, receiver, state);
         return assignment_testable::test_result::WEAKLY_ASSIGNABLE;
     } catch (exceptions::invalid_request_exception& e) {
         return assignment_testable::test_result::NOT_ASSIGNABLE;
@@ -824,9 +825,9 @@ tuple_constructor_test_assignment(const tuple_constructor& tc, data_dictionary::
 
 static
 std::optional<expression>
-tuple_constructor_prepare_nontuple(const tuple_constructor& tc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_memo& memo) {
+tuple_constructor_prepare_nontuple(const tuple_constructor& tc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state) {
     if (receiver) {
-        tuple_constructor_validate_assignable_to(tc, db, keyspace, schema_opt, *receiver, memo);
+        tuple_constructor_validate_assignable_to(tc, db, keyspace, schema_opt, *receiver, state);
     }
     std::vector<expression> values;
     bool all_terminal = true;
@@ -835,7 +836,7 @@ tuple_constructor_prepare_nontuple(const tuple_constructor& tc, data_dictionary:
         if (receiver) {
             component_receiver = component_spec_of(*receiver, i);
         }
-        std::optional<expression> value_opt = try_prepare_expression(tc.elements[i], db, keyspace, schema_opt, component_receiver, infer_default && !receiver, memo);
+        std::optional<expression> value_opt = try_prepare_expression(tc.elements[i], db, keyspace, schema_opt, component_receiver, infer_default && !receiver, state);
         if (!value_opt) {
             return std::nullopt;
         }
@@ -1107,7 +1108,7 @@ cast_test_assignment(const cast& c, data_dictionary::database db, const sstring&
 // numeric widening (e.g. int -> bigint, converted like CAST).
 static
 std::optional<expression>
-c_cast_prepare_expression(const cast& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo) {
+c_cast_prepare_expression(const cast& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state) {
     data_type cast_type = cast_get_prepared_type(c, db, keyspace);
 
     if (!receiver) {
@@ -1121,7 +1122,7 @@ c_cast_prepare_expression(const cast& c, data_dictionary::database db, const sst
 
     // First check if the casted expression can be assigned(converted) to the type specified in the cast.
     // test_assignment accepts a value-compatible binary representation or a lossless widening to c.type.
-    if (!is_assignable(test_assignment(c.arg, db, keyspace, schema_opt, *cast_type_receiver, memo))) {
+    if (!is_assignable(test_assignment(c.arg, db, keyspace, schema_opt, *cast_type_receiver, state))) {
         throw exceptions::invalid_request_exception(format("Cannot cast value {:user} to type {}", c.arg, cast_type->as_cql3_type()));
     }
 
@@ -1129,7 +1130,7 @@ c_cast_prepare_expression(const cast& c, data_dictionary::database db, const sst
     // Using this receiver makes it possible to write things like: (blob)(int)1234
     // Using the original receiver wouldn't work in such cases - it would complain
     // that untyped_constant(1234) isn't a valid blob constant.
-    expression prepared_arg = prepare_expression(c.arg, db, keyspace, schema_opt, cast_type_receiver, memo);
+    expression prepared_arg = prepare_expression(c.arg, db, keyspace, schema_opt, cast_type_receiver, state);
 
     // Then check if a value of type c.type can be assigned(converted) to the receiver type.
     // cast_test_assignment accepts a value-compatible representation or a lossless widening to it.
@@ -1149,7 +1150,7 @@ c_cast_prepare_expression(const cast& c, data_dictionary::database db, const sst
 
 static
 std::optional<expression>
-sql_cast_prepare_expression(const cast& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo) {
+sql_cast_prepare_expression(const cast& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state) {
     data_type cast_type = cast_get_prepared_type(c, db, keyspace);
 
     if (!receiver) {
@@ -1158,7 +1159,7 @@ sql_cast_prepare_expression(const cast& c, data_dictionary::database db, const s
             keyspace, "unknown_cf", ::make_shared<column_identifier>(receiver_name, true), cast_type);
     }
 
-    auto prepared_arg = prepare_expression(c.arg, db, keyspace, schema_opt, nullptr, memo);
+    auto prepared_arg = prepare_expression(c.arg, db, keyspace, schema_opt, nullptr, state);
 
     // cast to the same type should be omitted
     if (cast_type == type_of(prepared_arg)) {
@@ -1176,20 +1177,20 @@ sql_cast_prepare_expression(const cast& c, data_dictionary::database db, const s
 }
 
 std::optional<expression>
-cast_prepare_expression(const cast& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo) {
+cast_prepare_expression(const cast& c, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state) {
     switch (c.style) {
     case cast::cast_style::c:
-        return c_cast_prepare_expression(c, db, keyspace, schema_opt, std::move(receiver), memo);
+        return c_cast_prepare_expression(c, db, keyspace, schema_opt, std::move(receiver), state);
     case cast::cast_style::sql:
-        return sql_cast_prepare_expression(c, db, keyspace, schema_opt, std::move(receiver), memo);
+        return sql_cast_prepare_expression(c, db, keyspace, schema_opt, std::move(receiver), state);
     }
     on_internal_error(expr_logger, "Illegal cast style");
 }
 
 std::optional<expression>
-field_selection_prepare_expression(const field_selection& fs, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo) {
+field_selection_prepare_expression(const field_selection& fs, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state) {
     // We can't infer the type of the user defined type from the field being selected
-    auto prepared_structure = try_prepare_expression(fs.structure, db, keyspace, schema_opt, nullptr, /*infer_default=*/false, memo);
+    auto prepared_structure = try_prepare_expression(fs.structure, db, keyspace, schema_opt, nullptr, /*infer_default=*/false, state);
     if (!prepared_structure) {
         throw exceptions::invalid_request_exception(fmt::format("Cannot infer type of {}", fs.structure));
     }
@@ -1221,9 +1222,9 @@ field_selection_prepare_expression(const field_selection& fs, data_dictionary::d
 }
 
 assignment_testable::test_result
-field_selection_test_assignment(const field_selection& fs, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+field_selection_test_assignment(const field_selection& fs, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     // We can't infer the type of the user defined type from the field being selected
-    auto prepared_structure = try_prepare_expression(fs.structure, db, keyspace, schema_opt, nullptr, /*infer_default=*/false, memo);
+    auto prepared_structure = try_prepare_expression(fs.structure, db, keyspace, schema_opt, nullptr, /*infer_default=*/false, state);
     if (!prepared_structure) {
         throw exceptions::invalid_request_exception(fmt::format("Cannot infer type of {}", fs.structure));
     }
@@ -1342,7 +1343,7 @@ struct partially_prepared_arg {
 
 static
 std::vector<partially_prepared_arg>
-prepare_function_args_for_type_inference(std::span<const expression> args, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, prepare_memo& memo) {
+prepare_function_args_for_type_inference(std::span<const expression> args, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, prepare_state& state) {
     // Prepare the arguments that can be prepared without a receiver.
     // Prepared expressions have a known type, which helps with finding the right function.
     std::vector<partially_prepared_arg> partially_prepared_args;
@@ -1351,7 +1352,7 @@ prepare_function_args_for_type_inference(std::span<const expression> args, data_
         // A nullopt means the argument can't be resolved without a receiver (e.g. a nested
         // call that is ambiguous until the parameter type is known) - it stays a hole, to be
         // probed against each candidate parameter type and re-prepared once one is chosen.
-        std::optional<expression> prepared_arg_opt = try_prepare_expression(argument, db, keyspace, schema_opt, nullptr, /*infer_default=*/false, memo, /*allow_unresolved=*/true);
+        std::optional<expression> prepared_arg_opt = try_prepare_expression(argument, db, keyspace, schema_opt, nullptr, /*infer_default=*/false, state, /*allow_unresolved=*/true);
         std::optional<data_type> type;
         if (prepared_arg_opt) {
             type = type_of(*prepared_arg_opt);
@@ -1363,13 +1364,13 @@ prepare_function_args_for_type_inference(std::span<const expression> args, data_
             // same default inference used elsewhere; the defaulted form itself is not
             // reused as the prepared argument, so it does not pin a literal to its
             // default type before the real parameter type is known.
-            if (auto defaulted = try_prepare_expression(argument, db, keyspace, schema_opt, nullptr, /*infer_default=*/true, memo, /*allow_unresolved=*/true)) {
+            if (auto defaulted = try_prepare_expression(argument, db, keyspace, schema_opt, nullptr, /*infer_default=*/true, state, /*allow_unresolved=*/true)) {
                 type = type_of(*defaulted);
             }
         }
         expression testable_expr = prepared_arg_opt ? *prepared_arg_opt : argument;
         partially_prepared_args.push_back(partially_prepared_arg{
-            .testable = as_assignment_testable(std::move(testable_expr), std::move(type), memo),
+            .testable = as_assignment_testable(std::move(testable_expr), std::move(type), state),
             .prepared = std::move(prepared_arg_opt),
         });
     }
@@ -1400,7 +1401,7 @@ void reset_test_assignment_function_call_count() {
 
 // Test-only switch to disable memoization, so tests can observe the un-memoized
 // (exponential) probing cost for comparison. Read once when a top-level prepare entry
-// point creates its prepare_memo; a stale value across a yield only affects whether a
+// point creates its prepare_state; a stale value across a yield only affects whether a
 // cache is used, never correctness.
 static thread_local bool g_prepare_memo_enabled = true;
 
@@ -1408,10 +1409,10 @@ void set_prepare_memo_enabled(bool enabled) {
     g_prepare_memo_enabled = enabled;
 }
 
-prepare_memo::prepare_memo() : enabled(g_prepare_memo_enabled) {}
+prepare_state::prepare_state() : memo_enabled(g_prepare_memo_enabled) {}
 
 std::optional<expression>
-prepare_function_call(const expr::function_call& fc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo, bool allow_unresolved) {
+prepare_function_call(const expr::function_call& fc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, bool allow_unresolved) {
     ++g_prepare_function_call_count;
     // Try to extract a column family name from the available information.
     // Most functions can be prepared without information about the column family, usually just the keyspace is enough.
@@ -1427,7 +1428,7 @@ prepare_function_call(const expr::function_call& fc, data_dictionary::database d
 
     // Prepare the arguments that can be prepared without a receiver.
     // Prepared expressions have a known type, which helps with finding the right function.
-    auto partially_prepared_args = prepare_function_args_for_type_inference(fc.args, db, keyspace, schema_opt, memo);
+    auto partially_prepared_args = prepare_function_args_for_type_inference(fc.args, db, keyspace, schema_opt, state);
 
     auto fun_opt = std::visit(overloaded_functor{
         [] (const shared_ptr<functions::function>& func) -> std::optional<shared_ptr<functions::function>> {
@@ -1484,7 +1485,7 @@ prepare_function_call(const expr::function_call& fc, data_dictionary::database d
         // reuse path coerces explicitly.
         expr::expression e = [&] () -> expr::expression {
             if (!partially_prepared_args[i].prepared) {
-                return prepare_expression(fc.args[i], db, keyspace, schema_opt, arg_spec, memo);
+                return prepare_expression(fc.args[i], db, keyspace, schema_opt, arg_spec, state);
             } else {
                 expr::expression prepared = std::move(*partially_prepared_args[i].prepared);
                 return coerce_to(std::move(prepared), arg_spec->type, db, keyspace);
@@ -1511,12 +1512,12 @@ prepare_function_call(const expr::function_call& fc, data_dictionary::database d
 }
 
 assignment_testable::test_result
-test_assignment_function_call(const cql3::expr::function_call& fc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+test_assignment_function_call(const cql3::expr::function_call& fc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     std::optional<call_probe_key> memo_key;
-    if (memo.enabled) {
+    if (state.memo_enabled) {
         memo_key = call_probe_key{fc, receiver.type};
-        auto it = memo.test_assignment_function_call.find(*memo_key);
-        if (it != memo.test_assignment_function_call.end()) {
+        auto it = state.test_assignment_function_call.find(*memo_key);
+        if (it != state.test_assignment_function_call.end()) {
             return it->second;
         }
     }
@@ -1531,7 +1532,7 @@ test_assignment_function_call(const cql3::expr::function_call& fc, data_dictiona
         try {
             auto&& fun = std::visit(overloaded_functor{
                 [&] (const functions::function_name& name) {
-                    auto args = prepare_function_args_for_type_inference(fc.args, db, keyspace, schema_opt, memo);
+                    auto args = prepare_function_args_for_type_inference(fc.args, db, keyspace, schema_opt, state);
                     return functions::instance().get(db, keyspace, name,
                             args
                                     | std::views::transform(&partially_prepared_arg::testable)
@@ -1556,7 +1557,7 @@ test_assignment_function_call(const cql3::expr::function_call& fc, data_dictiona
     }();
 
     if (memo_key) {
-        memo.test_assignment_function_call.emplace(std::move(*memo_key), result);
+        state.test_assignment_function_call.emplace(std::move(*memo_key), result);
     }
     return result;
 }
@@ -1579,7 +1580,7 @@ std::optional<expression> prepare_conjunction(const conjunction& conj,
                                               const sstring& keyspace,
                                               const schema* schema_opt,
                                               lw_shared_ptr<column_specification> receiver,
-                                              prepare_memo& memo,
+                                              prepare_state& state,
                                               const dialect* d) {
     if (receiver.get() != nullptr && receiver->type->without_reversed().get_kind() != abstract_type::kind::boolean) {
         throw exceptions::invalid_request_exception(
@@ -1606,7 +1607,7 @@ std::optional<expression> prepare_conjunction(const conjunction& conj,
     bool all_terminal = true;
     for (const expression& child : conj.children) {
         std::optional<expression> prepared_child =
-            try_prepare_expression_allowing_relations(child, db, keyspace, schema_opt, child_receiver, /*infer_default=*/false, memo, d);
+            try_prepare_expression_allowing_relations(child, db, keyspace, schema_opt, child_receiver, /*infer_default=*/false, state, d);
         if (!prepared_child.has_value()) {
             throw exceptions::invalid_request_exception(fmt::format("Could not infer type of {}", child));
         }
@@ -1631,7 +1632,7 @@ prepare_column_mutation_attribute(
         const sstring& keyspace,
         const schema* schema_opt,
         lw_shared_ptr<column_specification> receiver,
-        prepare_memo& memo) {
+        prepare_state& state) {
     auto result_type = expr::column_mutation_attribute_type(cma);
     if (receiver.get() != nullptr && receiver->type->without_reversed().get_kind() != result_type->get_kind()) {
         throw exceptions::invalid_request_exception(
@@ -1639,7 +1640,7 @@ prepare_column_mutation_attribute(
                     cma.kind, result_type->name(),
                     receiver->type->name(), receiver->name->text()));
     }
-    auto column = prepare_expression(cma.column, db, keyspace, schema_opt, nullptr, memo);
+    auto column = prepare_expression(cma.column, db, keyspace, schema_opt, nullptr, state);
     // Helper for the subscript and field-selection cases below: validates that
     // inner_expr is a column, not a primary key column, that its type satisfies
     // type_allowed, and that the cluster feature flag is on.
@@ -1713,24 +1714,24 @@ prepare_relation(const binary_operator& binop, data_dictionary::database db, con
 }
 
 static std::optional<expression>
-try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_memo& memo, const dialect* d) {
+try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, const dialect* d) {
     if (auto* conj = as_if<conjunction>(&expr)) {
-        return prepare_conjunction(*conj, db, keyspace, schema_opt, std::move(receiver), memo, d);
+        return prepare_conjunction(*conj, db, keyspace, schema_opt, std::move(receiver), state, d);
     }
     if (auto* binop = as_if<binary_operator>(&expr)) {
         return prepare_relation(*binop, db, schema_opt, receiver, d);
     }
-    return try_prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), infer_default, memo);
+    return try_prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), infer_default, state);
 }
 
 std::optional<expression>
 try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default) {
-    prepare_memo memo;
-    return try_prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), infer_default, memo);
+    prepare_state state;
+    return try_prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), infer_default, state);
 }
 
 static std::optional<expression>
-try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_memo& memo, bool allow_unresolved) {
+try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, bool allow_unresolved) {
     return expr::visit(overloaded_functor{
         [&] (const constant& value) -> std::optional<expression> {
             if (receiver && !is_assignable(expression_test_assignment(value.type, *receiver))) {
@@ -1761,7 +1762,7 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
             return result;
         },
         [&] (const conjunction& conj) -> std::optional<expression> {
-            return prepare_conjunction(conj, db, keyspace, schema_opt, receiver, memo, /*d=*/nullptr);
+            return prepare_conjunction(conj, db, keyspace, schema_opt, receiver, state, /*d=*/nullptr);
         },
         [] (const column_value& cv) -> std::optional<expression> {
             return cv;
@@ -1772,7 +1773,7 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
             }
             auto& schema = *schema_opt;
 
-            auto sub_col_opt = try_prepare_expression(sub.val, db, keyspace, schema_opt, receiver, /*infer_default=*/false, memo);
+            auto sub_col_opt = try_prepare_expression(sub.val, db, keyspace, schema_opt, receiver, /*infer_default=*/false, state);
             if (!sub_col_opt) {
                 return std::nullopt;
             }
@@ -1797,7 +1798,7 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
 
             return subscript {
                 .val = sub_col,
-                .sub = prepare_expression(sub.sub, db, schema.ks_name(), &schema, std::move(subscript_column_spec), memo),
+                .sub = prepare_expression(sub.sub, db, schema.ks_name(), &schema, std::move(subscript_column_spec), state),
                 .type = value_cmp,
             };
         },
@@ -1808,16 +1809,16 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
             return resolve_column(unin, *schema_opt);
         },
         [&] (const column_mutation_attribute& cma) -> std::optional<expression> {
-            return prepare_column_mutation_attribute(cma, db, keyspace, schema_opt, std::move(receiver), memo);
+            return prepare_column_mutation_attribute(cma, db, keyspace, schema_opt, std::move(receiver), state);
         },
         [&] (const function_call& fc) -> std::optional<expression> {
-            return prepare_function_call(fc, db, keyspace, schema_opt, std::move(receiver), memo, allow_unresolved);
+            return prepare_function_call(fc, db, keyspace, schema_opt, std::move(receiver), state, allow_unresolved);
         },
         [&] (const cast& c) -> std::optional<expression> {
-            return cast_prepare_expression(c, db, keyspace, schema_opt, receiver, memo);
+            return cast_prepare_expression(c, db, keyspace, schema_opt, receiver, state);
         },
         [&] (const field_selection& fs) -> std::optional<expression> {
-            return field_selection_prepare_expression(fs, db, keyspace, schema_opt, receiver, memo);
+            return field_selection_prepare_expression(fs, db, keyspace, schema_opt, receiver, state);
         },
         [&] (const bind_variable& bv) -> std::optional<expression> {
             return bind_variable_prepare_expression(bv, db, keyspace, receiver);
@@ -1826,20 +1827,20 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
             return untyped_constant_prepare_expression(uc, db, keyspace, receiver, infer_default);
         },
         [&] (const tuple_constructor& tc) -> std::optional<expression> {
-            return tuple_constructor_prepare_nontuple(tc, db, keyspace, schema_opt, receiver, infer_default, memo);
+            return tuple_constructor_prepare_nontuple(tc, db, keyspace, schema_opt, receiver, infer_default, state);
         },
         [&] (const collection_constructor& c) -> std::optional<expression> {
             switch (c.style) {
-            case collection_constructor::style_type::list_or_vector: return list_or_vector_prepare_expression(c, db, keyspace, schema_opt, receiver, infer_default, memo);
-            case collection_constructor::style_type::set: return set_prepare_expression(c, db, keyspace, schema_opt, receiver, infer_default, memo);
-            case collection_constructor::style_type::map: return map_prepare_expression(c, db, keyspace, schema_opt, receiver, infer_default, memo);
+            case collection_constructor::style_type::list_or_vector: return list_or_vector_prepare_expression(c, db, keyspace, schema_opt, receiver, infer_default, state);
+            case collection_constructor::style_type::set: return set_prepare_expression(c, db, keyspace, schema_opt, receiver, infer_default, state);
+            case collection_constructor::style_type::map: return map_prepare_expression(c, db, keyspace, schema_opt, receiver, infer_default, state);
             case collection_constructor::style_type::vector:
                 on_internal_error(expr_logger, "vector style type found during prepare, should have been introduced post-prepare");
             }
             on_internal_error(expr_logger, fmt::format("unexpected collection_constructor style {}", static_cast<unsigned>(c.style)));
         },
         [&] (const usertype_constructor& uc) -> std::optional<expression> {
-            return usertype_constructor_prepare_expression(uc, db, keyspace, schema_opt, receiver, memo);
+            return usertype_constructor_prepare_expression(uc, db, keyspace, schema_opt, receiver, state);
         },
         [&] (const temporary& t) -> std::optional<expression> {
             on_internal_error(expr_logger, "temporary found during prepare, should have been introduced post-prepare");
@@ -1849,9 +1850,9 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
 
 static
 assignment_testable::test_result
-unresolved_identifier_test_assignment(const unresolved_identifier& ui, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
-    auto prepared = prepare_expression(ui, db, keyspace, schema_opt, make_lw_shared<column_specification>(receiver), memo);
-    return test_assignment(prepared, db, keyspace, schema_opt, receiver, memo);
+unresolved_identifier_test_assignment(const unresolved_identifier& ui, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
+    auto prepared = prepare_expression(ui, db, keyspace, schema_opt, make_lw_shared<column_specification>(receiver), state);
+    return test_assignment(prepared, db, keyspace, schema_opt, receiver, state);
 }
 
 static
@@ -1863,12 +1864,12 @@ column_mutation_attribute_test_assignment(const column_mutation_attribute& cma, 
 
 assignment_testable::test_result
 test_assignment(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver) {
-    prepare_memo memo;
-    return test_assignment(expr, db, keyspace, schema_opt, receiver, memo);
+    prepare_state state;
+    return test_assignment(expr, db, keyspace, schema_opt, receiver, state);
 }
 
 static assignment_testable::test_result
-test_assignment(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+test_assignment(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     using test_result = assignment_testable::test_result;
     return expr::visit(overloaded_functor{
         [&] (const constant& value) -> test_result {
@@ -1891,19 +1892,19 @@ test_assignment(const expression& expr, data_dictionary::database db, const sstr
             return assignment_testable::test_result::NOT_ASSIGNABLE;
         },
         [&] (const unresolved_identifier& ui) -> test_result {
-            return unresolved_identifier_test_assignment(ui, db, keyspace, schema_opt, receiver, memo);
+            return unresolved_identifier_test_assignment(ui, db, keyspace, schema_opt, receiver, state);
         },
         [&] (const column_mutation_attribute& cma) -> test_result {
             return column_mutation_attribute_test_assignment(cma, db, keyspace, schema_opt, receiver);
         },
         [&] (const function_call& fc) -> test_result {
-            return test_assignment_function_call(fc, db, keyspace, schema_opt, receiver, memo);
+            return test_assignment_function_call(fc, db, keyspace, schema_opt, receiver, state);
         },
         [&] (const cast& c) -> test_result {
             return cast_test_assignment(c, db, keyspace, schema_opt, receiver);
         },
         [&] (const field_selection& fs) -> test_result {
-            return field_selection_test_assignment(fs, db, keyspace, schema_opt, receiver, memo);
+            return field_selection_test_assignment(fs, db, keyspace, schema_opt, receiver, state);
         },
         [&] (const bind_variable& bv) -> test_result {
             return bind_variable_test_assignment(bv, db, keyspace, receiver);
@@ -1912,20 +1913,20 @@ test_assignment(const expression& expr, data_dictionary::database db, const sstr
             return untyped_constant_test_assignment(uc, db, keyspace, receiver);
         },
         [&] (const tuple_constructor& tc) -> test_result {
-            return tuple_constructor_test_assignment(tc, db, keyspace, schema_opt, receiver, memo);
+            return tuple_constructor_test_assignment(tc, db, keyspace, schema_opt, receiver, state);
         },
         [&] (const collection_constructor& c) -> test_result {
             switch (c.style) {
-            case collection_constructor::style_type::list_or_vector: return list_or_vector_test_assignment(c, db, keyspace, schema_opt, receiver, memo);
-            case collection_constructor::style_type::set: return set_test_assignment(c, db, keyspace, schema_opt, receiver, memo);
-            case collection_constructor::style_type::map: return map_test_assignment(c, db, keyspace, schema_opt, receiver, memo);
+            case collection_constructor::style_type::list_or_vector: return list_or_vector_test_assignment(c, db, keyspace, schema_opt, receiver, state);
+            case collection_constructor::style_type::set: return set_test_assignment(c, db, keyspace, schema_opt, receiver, state);
+            case collection_constructor::style_type::map: return map_test_assignment(c, db, keyspace, schema_opt, receiver, state);
             case collection_constructor::style_type::vector:
                 on_internal_error(expr_logger, "vector style type found in test_assignment, should have been introduced post-prepare");
             }
             on_internal_error(expr_logger, fmt::format("unexpected collection_constructor style {}", static_cast<unsigned>(c.style)));
         },
         [&] (const usertype_constructor& uc) -> test_result {
-            return usertype_constructor_test_assignment(uc, db, keyspace, schema_opt, receiver, memo);
+            return usertype_constructor_test_assignment(uc, db, keyspace, schema_opt, receiver, state);
         },
         [&] (const temporary& t) -> test_result {
             on_internal_error(expr_logger, "temporary found in test_assignment, should have been introduced post-prepare");
@@ -2044,26 +2045,26 @@ test_assignment_any_size_float_vector(const expression& expr) {
 
 expression
 prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver) {
-    prepare_memo memo;
-    return prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), memo);
+    prepare_state state;
+    return prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), state);
 }
 
 expression
 prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d) {
-    prepare_memo memo;
-    return prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), memo, &d);
+    prepare_state state;
+    return prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), state, &d);
 }
 
 static expression
-prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_memo& memo, const dialect* d) {
+prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, const dialect* d) {
     // Pass 1: contextual typing. Expressions without a type (untyped constants,
     // collection literals) yield nullopt when no receiver constrains them.
-    auto e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/false, memo, d);
+    auto e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/false, state, d);
     // Pass 2: default-type inference. The same prepare is retried with infer_default
     // enabled, so untyped constants and collection literals fall back to a default
     // type at the point where no receiver is available.
     if (!e_opt) {
-        e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/true, memo, d);
+        e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/true, state, d);
     }
     if (!e_opt) {
         throw exceptions::invalid_request_exception(fmt::format("Could not infer type of {}", expr));
@@ -2077,16 +2078,16 @@ prepare_expression(const expression& expr, data_dictionary::database db, const s
 
 assignment_testable::test_result
 test_assignment_all(const std::vector<expression>& to_test, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver) {
-    prepare_memo memo;
-    return test_assignment_all(to_test, db, keyspace, schema_opt, receiver, memo);
+    prepare_state state;
+    return test_assignment_all(to_test, db, keyspace, schema_opt, receiver, state);
 }
 
 static assignment_testable::test_result
-test_assignment_all(const std::vector<expression>& to_test, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_memo& memo) {
+test_assignment_all(const std::vector<expression>& to_test, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state) {
     using test_result = assignment_testable::test_result;
     test_result res = test_result::EXACT_MATCH;
     for (auto&& e : to_test) {
-        test_result t = test_assignment(e, db, keyspace, schema_opt, receiver, memo);
+        test_result t = test_assignment(e, db, keyspace, schema_opt, receiver, state);
         if (t == test_result::NOT_ASSIGNABLE) {
             return test_result::NOT_ASSIGNABLE;
         }
@@ -2100,12 +2101,12 @@ test_assignment_all(const std::vector<expression>& to_test, data_dictionary::dat
 class assignment_testable_expression : public assignment_testable {
     expression _e;
     std::optional<data_type> _type_opt;
-    prepare_memo* _memo;
+    prepare_state* _state;
 public:
-    explicit assignment_testable_expression(expression e, std::optional<data_type> type_opt, prepare_memo* memo) : _e(std::move(e)), _type_opt(std::move(type_opt)), _memo(memo) {}
+    explicit assignment_testable_expression(expression e, std::optional<data_type> type_opt, prepare_state* state) : _e(std::move(e)), _type_opt(std::move(type_opt)), _state(state) {}
     virtual test_result test_assignment(data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver) const override {
-        if (_memo) {
-            return expr::test_assignment(_e, db, keyspace, schema_opt, receiver, *_memo);
+        if (_state) {
+            return expr::test_assignment(_e, db, keyspace, schema_opt, receiver, *_state);
         }
         return expr::test_assignment(_e, db, keyspace, schema_opt, receiver);
     }
@@ -2124,8 +2125,8 @@ public:
     return ::make_shared<assignment_testable_expression>(std::move(e), std::move(type_opt), nullptr);
 }
 
-static ::shared_ptr<assignment_testable> as_assignment_testable(expression e, std::optional<data_type> type_opt, prepare_memo& memo) {
-    return ::make_shared<assignment_testable_expression>(std::move(e), std::move(type_opt), &memo);
+static ::shared_ptr<assignment_testable> as_assignment_testable(expression e, std::optional<data_type> type_opt, prepare_state& state) {
+    return ::make_shared<assignment_testable_expression>(std::move(e), std::move(type_opt), &state);
 }
 
 // Finds column_defintion for given column name in the schema.
