@@ -192,10 +192,6 @@ expression adjust_for_collection_as_maps(const expression& e);
 extern expression prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d);
 std::optional<expression> try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d, bool infer_default = false);
 
-// Like prepare_expression, but for a position where a relation is allowed, like the IF
-// condition of an LWT statement. The functions above reject a relation instead.
-extern expression prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d);
-
 // Check that a prepared expression has no aggregate functions. Throws on error.
 void verify_no_aggregate_functions(const expression& expr, std::string_view context_for_errors);
 

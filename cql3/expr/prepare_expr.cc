@@ -96,15 +96,9 @@ struct prepare_state {
 // same state by reference, so it is never global.
 static std::optional<expression> try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, bool allow_unresolved = false);
 static assignment_testable::test_result test_assignment(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state);
-static expression prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, bool allow_relations = false);
+static expression prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state);
 static assignment_testable::test_result test_assignment_all(const std::vector<expression>& to_test, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state);
 static ::shared_ptr<assignment_testable> as_assignment_testable(expression e, std::optional<data_type> type_opt, prepare_state& state);
-
-// A relation may only appear in the expressions that are allowed to contain one - what a
-// relation is built from is an ordinary expression, which cannot contain one. Preparing
-// one anywhere else is refused rather than performed.
-static std::optional<expression> try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, bool allow_relations);
-static std::optional<expression> prepare_relation(const binary_operator& binop, data_dictionary::database db, const schema* schema_opt, const lw_shared_ptr<column_specification>& receiver, prepare_state& state, bool allow_relations);
 
 struct inferred_elements {
     data_type element_type;
@@ -1580,8 +1574,7 @@ std::optional<expression> prepare_conjunction(const conjunction& conj,
                                               const sstring& keyspace,
                                               const schema* schema_opt,
                                               lw_shared_ptr<column_specification> receiver,
-                                              prepare_state& state,
-                                              bool allow_relations) {
+                                              prepare_state& state) {
     if (receiver.get() != nullptr && receiver->type->without_reversed().get_kind() != abstract_type::kind::boolean) {
         throw exceptions::invalid_request_exception(
             format("AND conjunction produces a boolean value, which doesn't match the type: {} of {}",
@@ -1607,7 +1600,7 @@ std::optional<expression> prepare_conjunction(const conjunction& conj,
     bool all_terminal = true;
     for (const expression& child : conj.children) {
         std::optional<expression> prepared_child =
-            try_prepare_expression_allowing_relations(child, db, keyspace, schema_opt, child_receiver, /*infer_default=*/false, state, allow_relations);
+            try_prepare_expression(child, db, keyspace, schema_opt, child_receiver, /*infer_default=*/false, state);
         if (!prepared_child.has_value()) {
             throw exceptions::invalid_request_exception(fmt::format("Could not infer type of {}", child));
         }
@@ -1691,39 +1684,6 @@ prepare_column_mutation_attribute(
     };
 }
 
-static std::optional<expression>
-prepare_relation(const binary_operator& binop, data_dictionary::database db, const schema* schema_opt, const lw_shared_ptr<column_specification>& receiver, prepare_state& state, bool allow_relations) {
-    if (receiver.get() != nullptr && &receiver->type->without_reversed() != boolean_type.get()) {
-        throw exceptions::invalid_request_exception(
-            format("binary operator produces a boolean value, which doesn't match the type: {} of {}",
-                   receiver->type->name(), receiver->name->text()));
-    }
-
-    if (!allow_relations) {
-        on_internal_error(expr_logger, "preparing a relation in an expression that is not allowed to contain one");
-    }
-    binary_operator result = prepare_binary_operator(binop, db, *schema_opt, state.d);
-
-    // A binary operator where both sides of the equation are known can be evaluated to a boolean value.
-    // This only applies to operators in the CQL order, operations in the clustering order should only be
-    // of form (clustering_column1, colustering_column2) < SCYLLA_CLUSTERING_BOUND(1, 2).
-    if (is<constant>(result.lhs) && is<constant>(result.rhs) && result.order == comparison_order::cql) {
-        return constant(evaluate(result, query_options::DEFAULT), boolean_type);
-    }
-    return result;
-}
-
-static std::optional<expression>
-try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, bool allow_relations) {
-    if (auto* conj = as_if<conjunction>(&expr)) {
-        return prepare_conjunction(*conj, db, keyspace, schema_opt, std::move(receiver), state, allow_relations);
-    }
-    if (auto* binop = as_if<binary_operator>(&expr)) {
-        return prepare_relation(*binop, db, schema_opt, receiver, state, allow_relations);
-    }
-    return try_prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), infer_default, state);
-}
-
 std::optional<expression>
 try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d, bool infer_default) {
     prepare_state state(d);
@@ -1746,7 +1706,21 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
             return value;
         },
         [&] (const binary_operator& binop) -> std::optional<expression> {
-            return prepare_relation(binop, db, schema_opt, receiver, state, /*allow_relations=*/false);
+            if (receiver.get() != nullptr && &receiver->type->without_reversed() != boolean_type.get()) {
+                throw exceptions::invalid_request_exception(
+                    format("binary operator produces a boolean value, which doesn't match the type: {} of {}",
+                           receiver->type->name(), receiver->name->text()));
+            }
+
+            binary_operator result = prepare_binary_operator(binop, db, *schema_opt, state.d);
+
+            // A binary operator where both sides of the equation are known can be evaluated to a boolean value.
+            // This only applies to operators in the CQL order, operations in the clustering order should only be
+            // of form (clustering_column1, colustering_column2) < SCYLLA_CLUSTERING_BOUND(1, 2).
+            if (is<constant>(result.lhs) && is<constant>(result.rhs) && result.order == comparison_order::cql) {
+                return constant(evaluate(result, query_options::DEFAULT), boolean_type);
+            }
+            return result;
         },
         [&] (const unary_operator& uo) -> std::optional<expression> {
             // Prepare the operand; unary_operator preserves its operand's type.
@@ -1762,7 +1736,7 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
             return result;
         },
         [&] (const conjunction& conj) -> std::optional<expression> {
-            return prepare_conjunction(conj, db, keyspace, schema_opt, receiver, state, /*allow_relations=*/false);
+            return prepare_conjunction(conj, db, keyspace, schema_opt, receiver, state);
         },
         [] (const column_value& cv) -> std::optional<expression> {
             return cv;
@@ -2051,22 +2025,16 @@ prepare_expression(const expression& expr, data_dictionary::database db, const s
     return prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), state);
 }
 
-expression
-prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d) {
-    prepare_state state(d);
-    return prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), state, /*allow_relations=*/true);
-}
-
 static expression
-prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, bool allow_relations) {
+prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state) {
     // Pass 1: contextual typing. Expressions without a type (untyped constants,
     // collection literals) yield nullopt when no receiver constrains them.
-    auto e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/false, state, allow_relations);
+    auto e_opt = try_prepare_expression(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/false, state);
     // Pass 2: default-type inference. The same prepare is retried with infer_default
     // enabled, so untyped constants and collection literals fall back to a default
     // type at the point where no receiver is available.
     if (!e_opt) {
-        e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/true, state, allow_relations);
+        e_opt = try_prepare_expression(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/true, state);
     }
     if (!e_opt) {
         throw exceptions::invalid_request_exception(fmt::format("Could not infer type of {}", expr));
