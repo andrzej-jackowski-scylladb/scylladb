@@ -18,8 +18,8 @@ namespace cql3 {
 
 namespace statements {
 
-detach_service_level_statement::detach_service_level_statement(sstring role_name) :
-    _role_name(role_name) {
+detach_service_level_statement::detach_service_level_statement(sstring role_name, dialect d) :
+    service_level_statement(d), _role_name(role_name) {
 }
 
 bool detach_service_level_statement::needs_guard(query_processor& qp, service::query_state&) const {

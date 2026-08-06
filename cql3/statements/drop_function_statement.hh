@@ -23,7 +23,7 @@ protected:
 
 public:
     drop_function_statement(functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> arg_types,
-            bool args_present, bool if_exists);
+            bool args_present, bool if_exists, dialect d);
 };
 }
 }

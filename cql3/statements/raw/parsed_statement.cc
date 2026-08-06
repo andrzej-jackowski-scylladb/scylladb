@@ -22,6 +22,10 @@ namespace statements {
 
 namespace raw {
 
+parsed_statement::parsed_statement(dialect d)
+    : _prepare_ctx(d)
+{ }
+
 parsed_statement::~parsed_statement()
 { }
 
@@ -34,8 +38,8 @@ const prepare_context& parsed_statement::get_prepare_context() const {
 }
 
 // Used by the parser and preparable statement
-void parsed_statement::set_bound_variables(const std::vector<::shared_ptr<column_identifier>>& bound_names, dialect d) {
-    _prepare_ctx.set_bound_variables(bound_names, d);
+void parsed_statement::set_bound_variables(std::vector<::shared_ptr<column_identifier>> bound_names) {
+    _prepare_ctx.set_bound_variables(std::move(bound_names));
 }
 
 }

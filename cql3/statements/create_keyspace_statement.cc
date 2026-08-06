@@ -36,8 +36,9 @@ namespace statements {
 
 static logging::logger mylogger("create_keyspace");
 
-create_keyspace_statement::create_keyspace_statement(const sstring& name, shared_ptr<ks_prop_defs> attrs, bool if_not_exists)
-    : _name{name}
+create_keyspace_statement::create_keyspace_statement(const sstring& name, shared_ptr<ks_prop_defs> attrs, bool if_not_exists, dialect d)
+    : schema_altering_statement(d)
+    , _name{name}
     , _attrs{attrs}
     , _if_not_exists{if_not_exists}
 {

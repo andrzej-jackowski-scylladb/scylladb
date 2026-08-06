@@ -8,8 +8,6 @@
  * SPDX-License-Identifier: (LicenseRef-ScyllaDB-Source-Available-1.1 and Apache-2.0)
  */
 
-#include <seastar/core/on_internal_error.hh>
-
 #include "cql3/prepare_context.hh"
 #include "cql3/column_identifier.hh"
 #include "cql3/column_specification.hh"
@@ -17,7 +15,9 @@
 
 namespace cql3 {
 
-static logging::logger prepare_context_logger("prepare_context");
+prepare_context::prepare_context(dialect d)
+    : _dialect(d)
+{ }
 
 size_t prepare_context::bound_variables_size() const {
     return _variable_names.size();
@@ -69,22 +69,14 @@ void prepare_context::add_variable_specification(int32_t bind_index, lw_shared_p
     _variable_specs[bind_index] = spec;
 }
 
-void prepare_context::set_bound_variables(const std::vector<shared_ptr<column_identifier>>& bind_variable_names, dialect d) {
-    _variable_names = bind_variable_names;
+void prepare_context::set_bound_variables(std::vector<shared_ptr<column_identifier>> bind_variable_names) {
+    _variable_names = std::move(bind_variable_names);
     _variable_specs.clear();
     _targets.clear();
-    _dialect = d;
 
-    const size_t bn_size = bind_variable_names.size();
+    const size_t bn_size = _variable_names.size();
     _variable_specs.resize(bn_size);
     _targets.resize(bn_size);
-}
-
-const dialect& prepare_context::get_dialect() const {
-    if (!_dialect) {
-        on_internal_error(prepare_context_logger, "the dialect of the prepared statement was never set");
-    }
-    return *_dialect;
 }
 
 void prepare_context::clear_pk_function_calls_cache() {

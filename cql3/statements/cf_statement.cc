@@ -18,8 +18,9 @@ namespace statements {
 
 namespace raw {
 
-cf_statement::cf_statement(std::optional<cf_name> cf_name)
-    : _cf_name(std::move(cf_name))
+cf_statement::cf_statement(std::optional<cf_name> cf_name, dialect d)
+    : parsed_statement(d)
+    , _cf_name(std::move(cf_name))
 {
 }
 

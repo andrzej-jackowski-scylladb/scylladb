@@ -28,7 +28,7 @@ class drop_role_statement final : public authentication_altering_statement {
     bool _if_exists;
 
 public:
-    drop_role_statement(const cql3::role_name& name, bool if_exists) : _role(name.to_string()), _if_exists(if_exists) {
+    drop_role_statement(const cql3::role_name& name, bool if_exists, dialect d) : authentication_altering_statement(d), _role(name.to_string()), _if_exists(if_exists) {
     }
 
     std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;

@@ -30,8 +30,8 @@ class list_roles_statement final : public authorization_statement {
     bool _recursive;
 
 public:
-    list_roles_statement(const std::optional<role_name>& grantee, bool recursive)
-        : _grantee(grantee ? sstring(grantee->to_string()) : std::optional<sstring>()), _recursive(recursive) {}
+    list_roles_statement(const std::optional<role_name>& grantee, bool recursive, dialect d)
+        : authorization_statement(d), _grantee(grantee ? sstring(grantee->to_string()) : std::optional<sstring>()), _recursive(recursive) {}
 
     std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 

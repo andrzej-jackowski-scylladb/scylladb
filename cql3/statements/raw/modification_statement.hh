@@ -36,7 +36,7 @@ private:
     const bool _if_not_exists;
     const bool _if_exists;
 protected:
-    modification_statement(cf_name name, std::unique_ptr<attributes::raw> attrs, std::optional<expr::expression> conditions = {}, bool if_not_exists = false, bool if_exists = false);
+    modification_statement(cf_name name, std::unique_ptr<attributes::raw> attrs, dialect d, std::optional<expr::expression> conditions = {}, bool if_not_exists = false, bool if_exists = false);
 
 public:
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;

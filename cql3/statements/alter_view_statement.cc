@@ -23,8 +23,8 @@ namespace cql3 {
 
 namespace statements {
 
-alter_view_statement::alter_view_statement(cf_name view_name, std::optional<view_prop_defs> properties)
-        : schema_altering_statement{std::move(view_name)}
+alter_view_statement::alter_view_statement(cf_name view_name, std::optional<view_prop_defs> properties, dialect d)
+        : schema_altering_statement{std::move(view_name), d}
         , _properties{std::move(properties)}
 {
 }

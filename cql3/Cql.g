@@ -327,7 +327,7 @@ query returns [std::unique_ptr<raw::parsed_statement> stmnt]
     ;
 
 cqlStatement returns [std::unique_ptr<raw::parsed_statement> stmt]
-    @after{ if (stmt) { stmt->set_bound_variables(_bind_variable_names, _dialect); } }
+    @after{ if (stmt) { stmt->set_bound_variables(_bind_variable_names); } }
     : st1= selectStatement             { $stmt = std::move(st1); }
     | st2= insertStatement             { $stmt = std::move(st2); }
     | st3= updateStatement             { $stmt = std::move(st3); }
@@ -386,7 +386,7 @@ cqlStatement returns [std::unique_ptr<raw::parsed_statement> stmt]
  * USE <KEYSPACE>;
  */
 useStatement returns [std::unique_ptr<raw::use_statement> stmt]
-    : K_USE ks=keyspaceName { $stmt = std::make_unique<raw::use_statement>(ks); }
+    : K_USE ks=keyspaceName { $stmt = std::make_unique<raw::use_statement>(ks, _dialect); }
     ;
 
 /**
@@ -439,7 +439,7 @@ selectStatement returns [std::unique_ptr<raw::select_statement> expr]
             has_from ? std::optional(std::move(cf)) : std::nullopt,
             std::move(params),
             std::move(sclause), std::move(wclause), std::move(limit), std::move(per_partition_limit),
-            std::move(gbcolumns), std::move(attrs));
+            std::move(gbcolumns), std::move(attrs), _dialect);
       }
     ;
 
@@ -568,7 +568,8 @@ insertStatement returns [std::unique_ptr<raw::modification_statement> expr]
                                                        std::move(attrs),
                                                        std::move(column_names),
                                                        std::move(values),
-                                                       if_not_exists);
+                                                       if_not_exists,
+                                                       _dialect);
               }
         | K_JSON
           json_token=jsonValue { json_value = std::move(json_token); }
@@ -580,7 +581,8 @@ insertStatement returns [std::unique_ptr<raw::modification_statement> expr]
                                                        std::move(attrs),
                                                        std::move(*json_value),
                                                        if_not_exists,
-                                                       default_unset);
+                                                       default_unset,
+                                                       _dialect);
               }
         )
     ;
@@ -654,7 +656,8 @@ updateStatement returns [std::unique_ptr<raw::update_statement> expr]
                                                   std::move(operations),
                                                   std::move(wclause),
                                                   std::move(cond_opt),
-                                                  if_exists);
+                                                  if_exists,
+                                                  _dialect);
      }
     ;
 
@@ -695,7 +698,8 @@ deleteStatement returns [std::unique_ptr<raw::delete_statement> expr]
                                             std::move(column_deletions),
                                             std::move(wclause),
                                             std::move(cond_opt),
-                                            if_exists);
+                                            if_exists,
+                                            _dialect);
       }
     ;
 
@@ -727,7 +731,7 @@ pruneMaterializedViewStatement returns [std::unique_ptr<raw::select_statement> e
 	        auto params = make_lw_shared<raw::select_statement::parameters>(std::move(orderings), is_distinct, allow_filtering, statement_subtype, bypass_cache);
 	        return std::make_unique<raw::select_statement>(std::move(cf), std::move(params),
             std::vector<shared_ptr<raw_selector>>(), std::move(wclause), std::move(limit), std::move(per_partition_limit),
-            std::vector<::shared_ptr<cql3::column_identifier::raw>>(), std::move(attrs));
+            std::vector<::shared_ptr<cql3::column_identifier::raw>>(), std::move(attrs), _dialect);
 	  }
 	;
 
@@ -773,7 +777,7 @@ batchStatement returns [std::unique_ptr<cql3::statements::raw::batch_statement> 
               } )*
       K_APPLY K_BATCH
       {
-          $expr = std::make_unique<cql3::statements::raw::batch_statement>(type, std::move(attrs), std::move(statements));
+          $expr = std::make_unique<cql3::statements::raw::batch_statement>(type, std::move(attrs), std::move(statements), _dialect);
       }
     ;
 
@@ -802,7 +806,7 @@ dropAggregateStatement returns [std::unique_ptr<cql3::statements::drop_aggregate
         ')'
         { args_present = true; }
       )?
-      { $expr = std::make_unique<cql3::statements::drop_aggregate_statement>(std::move(fn), std::move(arg_types), args_present, if_exists); }
+      { $expr = std::make_unique<cql3::statements::drop_aggregate_statement>(std::move(fn), std::move(arg_types), args_present, if_exists, _dialect); }
     ;
 
 createAggregateStatement returns [std::unique_ptr<cql3::statements::create_aggregate_statement> expr]
@@ -836,7 +840,7 @@ createAggregateStatement returns [std::unique_ptr<cql3::statements::create_aggre
       (
         K_INITCOND init_val = term { ival = std::move(init_val); }
       )?
-      { $expr = std::make_unique<cql3::statements::create_aggregate_statement>(std::move(fn), std::move(arg_types), std::move(sfunc), std::move(stype), std::move(rfunc), std::move(ffunc), std::move(ival), or_replace, if_not_exists); }
+      { $expr = std::make_unique<cql3::statements::create_aggregate_statement>(std::move(fn), std::move(arg_types), std::move(sfunc), std::move(stype), std::move(rfunc), std::move(ffunc), std::move(ival), or_replace, if_not_exists, _dialect); }
     ;
 
 createFunctionStatement returns [std::unique_ptr<cql3::statements::create_function_statement> expr]
@@ -864,7 +868,7 @@ createFunctionStatement returns [std::unique_ptr<cql3::statements::create_functi
       K_RETURNS rt = comparatorType
       K_LANGUAGE language = IDENT
       K_AS body = STRING_LITERAL
-      { $expr = std::make_unique<cql3::statements::create_function_statement>(std::move(fn), to_lower($language.text), $body.text, std::move(arg_names), std::move(arg_types), std::move(rt), called_on_null_input, or_replace, if_not_exists); }
+      { $expr = std::make_unique<cql3::statements::create_function_statement>(std::move(fn), to_lower($language.text), $body.text, std::move(arg_names), std::move(arg_types), std::move(rt), called_on_null_input, or_replace, if_not_exists, _dialect); }
     ;
 
 dropFunctionStatement returns [std::unique_ptr<cql3::statements::drop_function_statement> expr]
@@ -885,7 +889,7 @@ dropFunctionStatement returns [std::unique_ptr<cql3::statements::drop_function_s
         ')'
         { args_present = true; }
       )?
-      { $expr = std::make_unique<cql3::statements::drop_function_statement>(std::move(fn), std::move(arg_types), args_present, if_exists); }
+      { $expr = std::make_unique<cql3::statements::drop_function_statement>(std::move(fn), std::move(arg_types), args_present, if_exists, _dialect); }
     ;
 
 /**
@@ -897,7 +901,7 @@ createKeyspaceStatement returns [std::unique_ptr<cql3::statements::create_keyspa
         bool if_not_exists = false;
     }
     : K_CREATE K_KEYSPACE (K_IF K_NOT K_EXISTS { if_not_exists = true; } )? ks=keyspaceName
-      ( K_WITH properties[*attrs] )? { $expr = std::make_unique<cql3::statements::create_keyspace_statement>(ks, attrs, if_not_exists); }
+      ( K_WITH properties[*attrs] )? { $expr = std::make_unique<cql3::statements::create_keyspace_statement>(ks, attrs, if_not_exists, _dialect); }
     ;
 
 /**
@@ -910,7 +914,7 @@ createKeyspaceStatement returns [std::unique_ptr<cql3::statements::create_keyspa
 createTableStatement returns [std::unique_ptr<cql3::statements::create_table_statement::raw_statement> expr]
     @init { bool if_not_exists = false; }
     : K_CREATE K_COLUMNFAMILY (K_IF K_NOT K_EXISTS { if_not_exists = true; } )?
-      cf=columnFamilyName { $expr = std::make_unique<cql3::statements::create_table_statement::raw_statement>(cf, if_not_exists); }
+      cf=columnFamilyName { $expr = std::make_unique<cql3::statements::create_table_statement::raw_statement>(cf, if_not_exists, _dialect); }
       cfamDefinition[*expr]
     ;
 
@@ -958,7 +962,7 @@ cfamOrdering[cql3::statements::cf_properties& expr]
 createTypeStatement returns [std::unique_ptr<create_type_statement> expr]
     @init { bool if_not_exists = false; }
     : K_CREATE K_TYPE (K_IF K_NOT K_EXISTS { if_not_exists = true; } )?
-         tn=userTypeName { $expr = std::make_unique<create_type_statement>(ut_name(std::move(tn)), if_not_exists); }
+         tn=userTypeName { $expr = std::make_unique<create_type_statement>(ut_name(std::move(tn)), if_not_exists, _dialect); }
          '(' typeColumns[*expr] ( ',' typeColumns[*expr]? )* ')'
     ;
 
@@ -987,7 +991,7 @@ createIndexStatement returns [std::unique_ptr<create_index_statement> expr]
         props.extract_index_specific_properties_to(*idx_props);
         view_prop_defs view_props = std::move(props).into_view_prop_defs();
 
-        $expr = std::make_unique<create_index_statement>(cf, name, targets, std::move(idx_props), std::move(view_props), if_not_exists);
+        $expr = std::make_unique<create_index_statement>(cf, name, targets, std::move(idx_props), std::move(view_props), if_not_exists, _dialect);
       }
     ;
 
@@ -1034,7 +1038,8 @@ createViewStatement returns [std::unique_ptr<create_view_statement> expr]
                 std::move(wclause),
                 std::move(partition_keys),
                 std::move(composite_keys),
-                if_not_exists);
+                if_not_exists,
+                _dialect);
         }
         ( K_WITH cfamProperty[{ $expr->properties() }] ( K_AND cfamProperty[{ $expr->properties() }] )*)?
     ;
@@ -1071,7 +1076,7 @@ alterKeyspaceStatement returns [std::unique_ptr<cql3::statements::alter_keyspace
         auto attrs = make_shared<cql3::statements::ks_prop_defs>();
     }
     : K_ALTER K_KEYSPACE ks=keyspaceName
-        K_WITH properties[*attrs] { $expr = std::make_unique<cql3::statements::alter_keyspace_statement>(ks, attrs); }
+        K_WITH properties[*attrs] { $expr = std::make_unique<cql3::statements::alter_keyspace_statement>(ks, attrs, _dialect); }
     ;
 
 /**
@@ -1111,7 +1116,7 @@ alterTableStatement returns [std::unique_ptr<alter_table_statement::raw_statemen
                ( id=cident { ttl_change = id; } | K_NULL )
           )
     {
-        $expr = std::make_unique<alter_table_statement::raw_statement>(std::move(cf), type, std::move(column_changes), std::move(props), std::move(renames), std::move(attrs), std::move(ttl_change));
+        $expr = std::make_unique<alter_table_statement::raw_statement>(std::move(cf), type, std::move(column_changes), std::move(props), std::move(renames), std::move(attrs), std::move(ttl_change), _dialect);
     }
     ;
 
@@ -1126,10 +1131,10 @@ cfisStatic returns [bool isStaticColumn=false]
  */
 alterTypeStatement returns [std::unique_ptr<alter_type_statement> expr]
     : K_ALTER K_TYPE name=userTypeName
-          ( K_ALTER f=ident K_TYPE v=comparatorType { $expr = std::make_unique<alter_type_statement::add_or_alter>(std::move(name), false, f, v); }
-          | K_ADD   f=ident v=comparatorType        { $expr = std::make_unique<alter_type_statement::add_or_alter>(std::move(name), true, f, v); }
+          ( K_ALTER f=ident K_TYPE v=comparatorType { $expr = std::make_unique<alter_type_statement::add_or_alter>(std::move(name), false, f, v, _dialect); }
+          | K_ADD   f=ident v=comparatorType        { $expr = std::make_unique<alter_type_statement::add_or_alter>(std::move(name), true, f, v, _dialect); }
           | K_RENAME
-               { $expr = std::make_unique<alter_type_statement::renames>(std::move(name)); }
+               { $expr = std::make_unique<alter_type_statement::renames>(std::move(name), _dialect); }
                renames[{ static_cast<alter_type_statement::renames&>(*$expr) }]
           )
     ;
@@ -1143,7 +1148,7 @@ alterViewStatement returns [std::unique_ptr<alter_view_statement> expr]
     }
     : K_ALTER K_MATERIALIZED K_VIEW cf=columnFamilyName K_WITH properties[*props.properties()]
     {
-        $expr = std::make_unique<alter_view_statement>(std::move(cf), std::move(props));
+        $expr = std::make_unique<alter_view_statement>(std::move(cf), std::move(props), _dialect);
     }
     ;
 
@@ -1157,7 +1162,7 @@ renames[alter_type_statement::renames& expr]
  */
 dropKeyspaceStatement returns [std::unique_ptr<drop_keyspace_statement> ksp]
     @init { bool if_exists = false; }
-    : K_DROP K_KEYSPACE (K_IF K_EXISTS { if_exists = true; } )? ks=keyspaceName { $ksp = std::make_unique<drop_keyspace_statement>(ks, if_exists); }
+    : K_DROP K_KEYSPACE (K_IF K_EXISTS { if_exists = true; } )? ks=keyspaceName { $ksp = std::make_unique<drop_keyspace_statement>(ks, if_exists, _dialect); }
     ;
 
 /**
@@ -1165,7 +1170,7 @@ dropKeyspaceStatement returns [std::unique_ptr<drop_keyspace_statement> ksp]
  */
 dropTableStatement returns [std::unique_ptr<drop_table_statement> stmt]
     @init { bool if_exists = false; }
-    : K_DROP K_COLUMNFAMILY (K_IF K_EXISTS { if_exists = true; } )? cf=columnFamilyName { $stmt = std::make_unique<drop_table_statement>(cf, if_exists); }
+    : K_DROP K_COLUMNFAMILY (K_IF K_EXISTS { if_exists = true; } )? cf=columnFamilyName { $stmt = std::make_unique<drop_table_statement>(cf, if_exists, _dialect); }
     ;
 
 /**
@@ -1173,7 +1178,7 @@ dropTableStatement returns [std::unique_ptr<drop_table_statement> stmt]
  */
 dropTypeStatement returns [std::unique_ptr<drop_type_statement> stmt]
     @init { bool if_exists = false; }
-    : K_DROP K_TYPE (K_IF K_EXISTS { if_exists = true; } )? name=userTypeName { $stmt = std::make_unique<drop_type_statement>(std::move(name), if_exists); }
+    : K_DROP K_TYPE (K_IF K_EXISTS { if_exists = true; } )? name=userTypeName { $stmt = std::make_unique<drop_type_statement>(std::move(name), if_exists, _dialect); }
     ;
 
 /**
@@ -1182,7 +1187,7 @@ dropTypeStatement returns [std::unique_ptr<drop_type_statement> stmt]
 dropViewStatement returns [std::unique_ptr<drop_view_statement> stmt]
     @init { bool if_exists = false; }
     : K_DROP K_MATERIALIZED K_VIEW (K_IF K_EXISTS { if_exists = true; } )? cf=columnFamilyName
-      { $stmt = std::make_unique<drop_view_statement>(cf, if_exists); }
+      { $stmt = std::make_unique<drop_view_statement>(cf, if_exists, _dialect); }
     ;
 
 /**
@@ -1191,7 +1196,7 @@ dropViewStatement returns [std::unique_ptr<drop_view_statement> stmt]
 dropIndexStatement returns [std::unique_ptr<drop_index_statement> expr]
     @init { bool if_exists = false; }
     : K_DROP K_INDEX (K_IF K_EXISTS { if_exists = true; } )? index=indexName
-      { $expr = std::make_unique<drop_index_statement>(index, if_exists); }
+      { $expr = std::make_unique<drop_index_statement>(index, if_exists, _dialect); }
     ;
 
 /**
@@ -1205,7 +1210,7 @@ truncateStatement returns [std::unique_ptr<raw::truncate_statement> stmt]
     : K_TRUNCATE (K_COLUMNFAMILY)? cf=columnFamilyName
       ( usingTimeoutClause[attrs] )?
       {
-        $stmt = std::make_unique<raw::truncate_statement>(std::move(cf), std::move(attrs));
+        $stmt = std::make_unique<raw::truncate_statement>(std::move(cf), std::move(attrs), _dialect);
       }
     ;
 
@@ -1219,7 +1224,7 @@ grantStatement returns [std::unique_ptr<grant_statement> stmt]
           r=resource
       K_TO
           grantee=userOrRoleName
-      { $stmt = std::make_unique<grant_statement>($permissionOrAll.perms, std::move(r), std::move(grantee)); }
+      { $stmt = std::make_unique<grant_statement>($permissionOrAll.perms, std::move(r), std::move(grantee), _dialect); }
     ;
 
 /**
@@ -1232,7 +1237,7 @@ revokeStatement returns [std::unique_ptr<revoke_statement> stmt]
           r=resource
       K_FROM
           revokee=userOrRoleName
-      { $stmt = std::make_unique<revoke_statement>($permissionOrAll.perms, std::move(r), std::move(revokee)); }
+      { $stmt = std::make_unique<revoke_statement>($permissionOrAll.perms, std::move(r), std::move(revokee), _dialect); }
     ;
 
 /**
@@ -1240,7 +1245,7 @@ revokeStatement returns [std::unique_ptr<revoke_statement> stmt]
  */
 grantRoleStatement returns [std::unique_ptr<grant_role_statement> stmt]
     : K_GRANT role=userOrRoleName K_TO grantee=userOrRoleName
-      { $stmt = std::make_unique<grant_role_statement>(std::move(role), std::move(grantee));  }
+      { $stmt = std::make_unique<grant_role_statement>(std::move(role), std::move(grantee), _dialect);  }
     ;
 
 /**
@@ -1248,7 +1253,7 @@ grantRoleStatement returns [std::unique_ptr<grant_role_statement> stmt]
  */
 revokeRoleStatement returns [std::unique_ptr<revoke_role_statement> stmt]
     : K_REVOKE role=userOrRoleName K_FROM revokee=userOrRoleName
-      { $stmt = std::make_unique<revoke_role_statement>(std::move(role), std::move(revokee)); }
+      { $stmt = std::make_unique<revoke_role_statement>(std::move(role), std::move(revokee), _dialect); }
     ;
 
 listPermissionsStatement returns [std::unique_ptr<list_permissions_statement> stmt]
@@ -1262,7 +1267,7 @@ listPermissionsStatement returns [std::unique_ptr<list_permissions_statement> st
       ( K_ON rr=resource { r = std::move(rr); } )?
       ( K_OF rn=userOrRoleName { role = sstring(cql3::role_name(std::move(rn)).to_string()); } )?
       ( K_NORECURSIVE { recursive = false; } )?
-      { $stmt = std::make_unique<list_permissions_statement>($permissionOrAll.perms, std::move(r), std::move(role), recursive); }
+      { $stmt = std::make_unique<list_permissions_statement>($permissionOrAll.perms, std::move(r), std::move(role), recursive, _dialect); }
     ;
 
 permission returns [auth::permission perm = auth::permission{}]
@@ -1325,7 +1330,7 @@ createUserStatement returns [std::unique_ptr<create_role_statement> stmt]
     : K_CREATE K_USER (K_IF K_NOT K_EXISTS { ifNotExists = true; })? u=username
       ( K_WITH K_PASSWORD v=STRING_LITERAL { opts.password = $v.text; })?
       ( K_SUPERUSER { opts.is_superuser = true; } | K_NOSUPERUSER { opts.is_superuser = false; } )?
-      { $stmt = std::make_unique<create_role_statement>(cql3::role_name(u, cql3::preserve_role_case::yes), std::move(opts), ifNotExists); }
+      { $stmt = std::make_unique<create_role_statement>(cql3::role_name(u, cql3::preserve_role_case::yes), std::move(opts), ifNotExists, _dialect); }
     ;
 
 /**
@@ -1338,7 +1343,7 @@ alterUserStatement returns [std::unique_ptr<alter_role_statement> stmt]
     : K_ALTER K_USER u=username
       ( K_WITH K_PASSWORD v=STRING_LITERAL { opts.password = $v.text; })?
       ( K_SUPERUSER { opts.is_superuser = true; } | K_NOSUPERUSER { opts.is_superuser = false; } )?
-      { $stmt = std::make_unique<alter_role_statement>(cql3::role_name(u, cql3::preserve_role_case::yes), std::move(opts)); }
+      { $stmt = std::make_unique<alter_role_statement>(cql3::role_name(u, cql3::preserve_role_case::yes), std::move(opts), _dialect); }
     ;
 
 /**
@@ -1347,14 +1352,14 @@ alterUserStatement returns [std::unique_ptr<alter_role_statement> stmt]
 dropUserStatement returns [std::unique_ptr<drop_role_statement> stmt]
     @init { bool ifExists = false; }
     : K_DROP K_USER (K_IF K_EXISTS { ifExists = true; })? u=username
-      { $stmt = std::make_unique<drop_role_statement>(cql3::role_name(std::move(u), cql3::preserve_role_case::yes), ifExists); }
+      { $stmt = std::make_unique<drop_role_statement>(cql3::role_name(std::move(u), cql3::preserve_role_case::yes), ifExists, _dialect); }
     ;
 
 /**
  * LIST USERS
  */
 listUsersStatement returns [std::unique_ptr<list_users_statement> stmt]
-    : K_LIST K_USERS { $stmt = std::make_unique<list_users_statement>(); }
+    : K_LIST K_USERS { $stmt = std::make_unique<list_users_statement>(_dialect); }
     ;
 
 /**
@@ -1369,7 +1374,7 @@ createRoleStatement returns [std::unique_ptr<create_role_statement> stmt]
     }
     : K_CREATE K_ROLE (K_IF K_NOT K_EXISTS { if_not_exists = true; })? name=userOrRoleName
       (K_WITH roleOptions[opts])?
-      { $stmt = std::make_unique<create_role_statement>(std::move(name), std::move(opts), if_not_exists); }
+      { $stmt = std::make_unique<create_role_statement>(std::move(name), std::move(opts), if_not_exists, _dialect); }
     ;
 
 /**
@@ -1381,7 +1386,7 @@ alterRoleStatement returns [std::unique_ptr<alter_role_statement> stmt]
     }
     : K_ALTER K_ROLE name=userOrRoleName
       (K_WITH roleOptions[opts])?
-      { $stmt = std::make_unique<alter_role_statement>(std::move(name), std::move(opts)); }
+      { $stmt = std::make_unique<alter_role_statement>(std::move(name), std::move(opts), _dialect); }
     ;
 
 /**
@@ -1392,7 +1397,7 @@ dropRoleStatement returns [std::unique_ptr<drop_role_statement> stmt]
         bool if_exists = false;
     }
     : K_DROP K_ROLE (K_IF K_EXISTS { if_exists = true; })? name=userOrRoleName
-      { $stmt = std::make_unique<drop_role_statement>(std::move(name), if_exists); }
+      { $stmt = std::make_unique<drop_role_statement>(std::move(name), if_exists, _dialect); }
     ;
 
 /**
@@ -1406,7 +1411,7 @@ listRolesStatement returns [std::unique_ptr<list_roles_statement> stmt]
     : K_LIST K_ROLES
         (K_OF g=userOrRoleName { grantee = std::move(g); })?
         (K_NORECURSIVE { recursive = false; })?
-        { $stmt = std::make_unique<list_roles_statement>(grantee, recursive); }
+        { $stmt = std::make_unique<list_roles_statement>(grantee, recursive, _dialect); }
     ;
 
 roleOptions[cql3::role_options& opts]
@@ -1438,7 +1443,7 @@ createServiceLevelStatement returns [std::unique_ptr<create_service_level_statem
         bool if_not_exists = false;
     }
     : K_CREATE serviceLevel (K_IF K_NOT K_EXISTS { if_not_exists = true; })? name=serviceLevelOrRoleName (K_WITH properties[*attrs])?
-      { $stmt = std::make_unique<create_service_level_statement>(name, attrs, if_not_exists); }
+      { $stmt = std::make_unique<create_service_level_statement>(name, attrs, if_not_exists, _dialect); }
     ;
 
 /**
@@ -1449,7 +1454,7 @@ alterServiceLevelStatement returns [std::unique_ptr<alter_service_level_statemen
         auto attrs = make_shared<cql3::statements::sl_prop_defs>();
     }
     : K_ALTER serviceLevel name=serviceLevelOrRoleName K_WITH properties[*attrs]
-      { $stmt = std::make_unique<alter_service_level_statement>(name, attrs); }
+      { $stmt = std::make_unique<alter_service_level_statement>(name, attrs, _dialect); }
     ;
 
 /**
@@ -1460,7 +1465,7 @@ dropServiceLevelStatement returns [std::unique_ptr<drop_service_level_statement>
         bool if_exists = false;
     }
     : K_DROP serviceLevel (K_IF K_EXISTS { if_exists = true; })? name=serviceLevelOrRoleName
-      { $stmt = std::make_unique<drop_service_level_statement>(name, if_exists); }
+      { $stmt = std::make_unique<drop_service_level_statement>(name, if_exists, _dialect); }
     ;
 
 /**
@@ -1470,7 +1475,7 @@ attachServiceLevelStatement returns [std::unique_ptr<attach_service_level_statem
     @init {
     }
     : K_ATTACH serviceLevel service_level_name=serviceLevelOrRoleName K_TO role_name=serviceLevelOrRoleName
-      { $stmt = std::make_unique<attach_service_level_statement>(service_level_name, role_name); }
+      { $stmt = std::make_unique<attach_service_level_statement>(service_level_name, role_name, _dialect); }
     ;
 
 /**
@@ -1480,7 +1485,7 @@ detachServiceLevelStatement returns [std::unique_ptr<detach_service_level_statem
     @init {
     }
     : K_DETACH serviceLevel K_FROM role_name=serviceLevelOrRoleName
-      { $stmt = std::make_unique<detach_service_level_statement>(role_name); }
+      { $stmt = std::make_unique<detach_service_level_statement>(role_name, _dialect); }
     ;
 
 
@@ -1492,9 +1497,9 @@ listServiceLevelStatement returns [std::unique_ptr<list_service_level_statement>
     @init {
     }
     : K_LIST serviceLevel service_level_name=serviceLevelOrRoleName
-      { $stmt = std::make_unique<list_service_level_statement>(service_level_name, false); } |
+      { $stmt = std::make_unique<list_service_level_statement>(service_level_name, false, _dialect); } |
       K_LIST K_ALL serviceLevels
-      { $stmt = std::make_unique<list_service_level_statement>("", true); }
+      { $stmt = std::make_unique<list_service_level_statement>("", true, _dialect); }
     ;
 
 /**
@@ -1506,9 +1511,9 @@ listServiceLevelAttachStatement returns [std::unique_ptr<list_service_level_atta
         bool allow_nonexisting_roles = false;
     }
     : K_LIST K_ATTACHED serviceLevel K_OF role_name=serviceLevelOrRoleName
-      { $stmt = std::make_unique<list_service_level_attachments_statement>(role_name); } |
+      { $stmt = std::make_unique<list_service_level_attachments_statement>(role_name, _dialect); } |
       K_LIST K_ALL K_ATTACHED serviceLevels
-      { $stmt = std::make_unique<list_service_level_attachments_statement>(); }
+      { $stmt = std::make_unique<list_service_level_attachments_statement>(_dialect); }
     ;
 
 /**
@@ -1518,7 +1523,7 @@ listEffectiveServiceLevelStatement returns [std::unique_ptr<list_effective_servi
     @init {
     }
     : K_LIST K_EFFECTIVE serviceLevel K_OF role_name=serviceLevelOrRoleName
-      { $stmt = std::make_unique<list_effective_service_level_statement>(role_name); }
+      { $stmt = std::make_unique<list_effective_service_level_statement>(role_name, _dialect); }
     ;
 
 /**
@@ -1548,21 +1553,21 @@ describeStatement returns [std::unique_ptr<cql3::statements::raw::describe_state
         bool with_hashed_passwords = false;
     }
     : ( K_DESCRIBE | K_DESC )
-    ( (K_CLUSTER) => K_CLUSTER                      { $stmt = cql3::statements::raw::describe_statement::cluster();                }
-    | (K_FULL { fullSchema=true; })? K_SCHEMA       { $stmt = cql3::statements::raw::describe_statement::schema(fullSchema);       }
-    | (K_KEYSPACES) => K_KEYSPACES                  { $stmt = cql3::statements::raw::describe_statement::keyspaces();              }
+    ( (K_CLUSTER) => K_CLUSTER                      { $stmt = cql3::statements::raw::describe_statement::cluster(_dialect);                         }
+    | (K_FULL { fullSchema=true; })? K_SCHEMA       { $stmt = cql3::statements::raw::describe_statement::schema(fullSchema, _dialect);              }
+    | (K_KEYSPACES) => K_KEYSPACES                  { $stmt = cql3::statements::raw::describe_statement::keyspaces(_dialect);                       }
     | (K_ONLY { only=true; })? K_KEYSPACE ( ks=keyspaceName { keyspace = ks; })?
-                                                    { $stmt = cql3::statements::raw::describe_statement::keyspace(keyspace, only); }
-    | (K_TABLES) => K_TABLES                        { $stmt = cql3::statements::raw::describe_statement::tables();                 }
-    | K_COLUMNFAMILY cf=columnFamilyName            { $stmt = cql3::statements::raw::describe_statement::table(cf);                }
-    | K_INDEX idx=columnFamilyName                  { $stmt = cql3::statements::raw::describe_statement::index(idx);               }
-    | K_MATERIALIZED K_VIEW view=columnFamilyName   { $stmt = cql3::statements::raw::describe_statement::view(view);               }
-    | (K_TYPES) => K_TYPES                          { $stmt = cql3::statements::raw::describe_statement::types();                  }
-    | K_TYPE tn=userTypeName                        { $stmt = cql3::statements::raw::describe_statement::type(std::move(tn));      }
-    | (K_FUNCTIONS) => K_FUNCTIONS                  { $stmt = cql3::statements::raw::describe_statement::functions();              }
-    | K_FUNCTION fn=functionName                    { $stmt = cql3::statements::raw::describe_statement::function(fn);             }
-    | (K_AGGREGATES) => K_AGGREGATES                { $stmt = cql3::statements::raw::describe_statement::aggregates();             }
-    | K_AGGREGATE ag=functionName                   { $stmt = cql3::statements::raw::describe_statement::aggregate(ag);            }
+                                                    { $stmt = cql3::statements::raw::describe_statement::keyspace(keyspace, only, _dialect);        }
+    | (K_TABLES) => K_TABLES                        { $stmt = cql3::statements::raw::describe_statement::tables(_dialect);                          }
+    | K_COLUMNFAMILY cf=columnFamilyName            { $stmt = cql3::statements::raw::describe_statement::table(cf, _dialect);                       }
+    | K_INDEX idx=columnFamilyName                  { $stmt = cql3::statements::raw::describe_statement::index(idx, _dialect);                      }
+    | K_MATERIALIZED K_VIEW view=columnFamilyName   { $stmt = cql3::statements::raw::describe_statement::view(view, _dialect);                      }
+    | (K_TYPES) => K_TYPES                          { $stmt = cql3::statements::raw::describe_statement::types(_dialect);                           }
+    | K_TYPE tn=userTypeName                        { $stmt = cql3::statements::raw::describe_statement::type(std::move(tn), _dialect);             }
+    | (K_FUNCTIONS) => K_FUNCTIONS                  { $stmt = cql3::statements::raw::describe_statement::functions(_dialect);                       }
+    | K_FUNCTION fn=functionName                    { $stmt = cql3::statements::raw::describe_statement::function(fn, _dialect);                    }
+    | (K_AGGREGATES) => K_AGGREGATES                { $stmt = cql3::statements::raw::describe_statement::aggregates(_dialect);                      }
+    | K_AGGREGATE ag=functionName                   { $stmt = cql3::statements::raw::describe_statement::aggregate(ag, _dialect);                   }
     | ( ( ksT=IDENT                                 { keyspace = sstring{$ksT.text}; }
         | ksT=QUOTED_NAME                           { keyspace = sstring{$ksT.text}; }
         | ksK=unreserved_keyword                    { keyspace = ksK; } ) 
@@ -1570,7 +1575,7 @@ describeStatement returns [std::unique_ptr<cql3::statements::raw::describe_state
         ( tT=IDENT                                  { generic_name = sstring{$tT.text}; }
         | tT=QUOTED_NAME                            { generic_name = sstring{$tT.text}; }
         | tK=unreserved_keyword                     { generic_name = tK; } )
-                                                    { $stmt = cql3::statements::raw::describe_statement::generic(keyspace, generic_name); }
+                                                    { $stmt = cql3::statements::raw::describe_statement::generic(keyspace, generic_name, _dialect); }
     )
     ( K_WITH K_INTERNALS (K_AND K_PASSWORDS { with_hashed_passwords = true; })?
         { $stmt->with_internals_details(with_hashed_passwords); } )?

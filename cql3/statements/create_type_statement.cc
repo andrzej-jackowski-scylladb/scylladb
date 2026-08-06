@@ -22,8 +22,9 @@ namespace cql3 {
 
 namespace statements {
 
-create_type_statement::create_type_statement(const ut_name& name, bool if_not_exists)
-    : _name{name}
+create_type_statement::create_type_statement(const ut_name& name, bool if_not_exists, dialect d)
+    : schema_altering_statement(d)
+    , _name{name}
     , _if_not_exists{if_not_exists}
 {
 }

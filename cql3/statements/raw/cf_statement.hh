@@ -31,7 +31,7 @@ class cf_statement : public parsed_statement {
 protected:
     std::optional<cf_name> _cf_name;
 
-    cf_statement(std::optional<cf_name> cf_name);
+    cf_statement(std::optional<cf_name> cf_name, dialect d);
 public:
     virtual void prepare_keyspace(const service::client_state& state);
 

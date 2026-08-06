@@ -49,8 +49,9 @@ alter_table_statement::alter_table_statement(uint32_t bound_terms,
                                              std::optional<cf_prop_defs> properties,
                                              renames_type renames,
                                              std::unique_ptr<attributes> attrs,
-                                             shared_ptr<column_identifier::raw> ttl_change)
-    : schema_altering_statement(std::move(name))
+                                             shared_ptr<column_identifier::raw> ttl_change,
+                                             dialect d)
+    : schema_altering_statement(std::move(name), d)
     , _bound_terms(bound_terms)
     , _type(t)
     , _column_changes(std::move(column_changes))
@@ -579,8 +580,9 @@ alter_table_statement::raw_statement::raw_statement(cf_name name,
                                                     std::optional<cf_prop_defs> properties,
                                                     renames_type renames,
                                                     std::unique_ptr<attributes::raw> attrs,
-                                                    shared_ptr<column_identifier::raw> ttl_change)
-    : cf_statement(std::move(name))
+                                                    shared_ptr<column_identifier::raw> ttl_change,
+                                                    dialect d)
+    : cf_statement(std::move(name), d)
     , _type(t)
     , _column_changes(std::move(column_changes))
     , _properties(std::move(properties))
@@ -612,7 +614,8 @@ alter_table_statement::raw_statement::prepare(data_dictionary::database db, cql_
                 _properties,
                 _renames,
                 std::move(prepared_attrs),
-                _ttl_change
+                _ttl_change,
+                ctx.get_dialect()
             ),
             ctx,
             // since alter table doesn't return any metadata when preparing

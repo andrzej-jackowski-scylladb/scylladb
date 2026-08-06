@@ -22,7 +22,7 @@ namespace statements {
 class drop_table_statement : public schema_altering_statement {
     bool _if_exists;
 public:
-    drop_table_statement(cf_name cf_name, bool if_exists);
+    drop_table_statement(cf_name cf_name, bool if_exists, dialect d);
 
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
 

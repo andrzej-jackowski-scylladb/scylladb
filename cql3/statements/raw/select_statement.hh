@@ -111,7 +111,8 @@ public:
             std::optional<expr::expression> limit,
             std::optional<expr::expression> per_partition_limit,
             std::vector<::shared_ptr<cql3::column_identifier::raw>> group_by_columns,
-            std::unique_ptr<cql3::attributes::raw> attrs);
+            std::unique_ptr<cql3::attributes::raw> attrs,
+            dialect d);
 
     virtual void prepare_keyspace(const service::client_state& state) override;
     using cf_statement::prepare_keyspace;

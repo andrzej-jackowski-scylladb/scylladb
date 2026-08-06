@@ -51,7 +51,7 @@ public:
      * @param name the name of the keyspace to create
      * @param attrs map of the raw keyword arguments that followed the <code>WITH</code> keyword.
      */
-    create_keyspace_statement(const sstring& name, shared_ptr<ks_prop_defs> attrs, bool if_not_exists);
+    create_keyspace_statement(const sstring& name, shared_ptr<ks_prop_defs> attrs, bool if_not_exists, dialect d);
 
     virtual bool has_keyspace() const override {
         return true;

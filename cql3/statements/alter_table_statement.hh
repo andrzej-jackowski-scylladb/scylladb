@@ -60,7 +60,8 @@ public:
                           std::optional<cf_prop_defs> properties,
                           renames_type renames,
                           std::unique_ptr<attributes> attrs,
-                          shared_ptr<column_identifier::raw> ttl_change);
+                          shared_ptr<column_identifier::raw> ttl_change,
+                          dialect d);
 
     virtual uint32_t get_bound_terms() const override;
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
@@ -90,7 +91,8 @@ public:
                   std::optional<cf_prop_defs> properties,
                   renames_type renames,
                   std::unique_ptr<attributes::raw> attrs,
-                  shared_ptr<column_identifier::raw> ttl_change);
+                  shared_ptr<column_identifier::raw> ttl_change,
+                  dialect d);
     
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 

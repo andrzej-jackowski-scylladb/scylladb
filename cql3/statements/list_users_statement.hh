@@ -20,6 +20,7 @@ namespace statements {
 
 class list_users_statement : public authentication_statement {
 public:
+    using authentication_statement::authentication_statement;
 
     std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 

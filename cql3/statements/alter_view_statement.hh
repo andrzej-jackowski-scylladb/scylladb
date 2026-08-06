@@ -29,7 +29,7 @@ private:
     std::optional<view_prop_defs> _properties;
     view_ptr prepare_view(data_dictionary::database db) const;
 public:
-    alter_view_statement(cf_name view_name, std::optional<view_prop_defs> properties);
+    alter_view_statement(cf_name view_name, std::optional<view_prop_defs> properties, dialect d);
 
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
 

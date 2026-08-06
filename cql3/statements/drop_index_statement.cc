@@ -23,8 +23,8 @@ namespace cql3 {
 
 namespace statements {
 
-drop_index_statement::drop_index_statement(::shared_ptr<index_name> index_name, bool if_exists)
-    : schema_altering_statement{index_name->get_cf_name(), &timeout_config::truncate_timeout}
+drop_index_statement::drop_index_statement(::shared_ptr<index_name> index_name, bool if_exists, dialect d)
+    : schema_altering_statement{index_name->get_cf_name(), d, &timeout_config::truncate_timeout}
     , _index_name{index_name->get_idx()}
     , _if_exists{if_exists}
 {

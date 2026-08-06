@@ -75,8 +75,9 @@ create_function_statement::prepare_schema_mutations(query_processor& qp, const q
 
 create_function_statement::create_function_statement(functions::function_name name, sstring language, sstring body,
         std::vector<shared_ptr<column_identifier>> arg_names, std::vector<shared_ptr<cql3_type::raw>> arg_types,
-        shared_ptr<cql3_type::raw> return_type, bool called_on_null_input, bool or_replace, bool if_not_exists)
-    : create_function_statement_base(std::move(name), std::move(arg_types), or_replace, if_not_exists),
+        shared_ptr<cql3_type::raw> return_type, bool called_on_null_input, bool or_replace, bool if_not_exists,
+        dialect d)
+    : create_function_statement_base(std::move(name), std::move(arg_types), or_replace, if_not_exists, d),
       _language(std::move(language)), _body(std::move(body)), _arg_names(std::move(arg_names)),
       _return_type(std::move(return_type)), _called_on_null_input(called_on_null_input) {}
 }

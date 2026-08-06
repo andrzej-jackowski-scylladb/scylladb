@@ -47,7 +47,8 @@ class create_index_statement : public schema_altering_statement {
 public:
     create_index_statement(cf_name name, ::shared_ptr<index_name> index_name,
             std::vector<::shared_ptr<index_target::raw>> raw_targets,
-            ::shared_ptr<index_specific_prop_defs> idx_properties, view_prop_defs view_properties, bool if_not_exists);
+            ::shared_ptr<index_specific_prop_defs> idx_properties, view_prop_defs view_properties, bool if_not_exists,
+            dialect d);
 
     future<> check_access(query_processor& qp, const service::client_state& state) const override;
     void validate(query_processor&, const service::client_state& state) const override;

@@ -48,8 +48,9 @@ create_table_statement::create_table_statement(cf_name name,
                                                bool if_not_exists,
                                                column_set_type static_columns,
                                                ::shared_ptr<column_identifier> ttl_column,
-                                               const std::optional<table_id>& id)
-    : schema_altering_statement{name}
+                                               const std::optional<table_id>& id,
+                                               dialect d)
+    : schema_altering_statement{name, d}
     , _use_compact_storage(false)
     , _static_columns{static_columns}
     , _ttl_column{ttl_column}
@@ -170,8 +171,8 @@ future<> create_table_statement::grant_permissions_to_creator(const service::cli
     }
 }
 
-create_table_statement::raw_statement::raw_statement(cf_name name, bool if_not_exists)
-    : cf_statement{std::move(name)}
+create_table_statement::raw_statement::raw_statement(cf_name name, bool if_not_exists, dialect d)
+    : cf_statement{std::move(name), d}
     , _if_not_exists{if_not_exists}
 { }
 
@@ -213,7 +214,7 @@ std::unique_ptr<prepared_statement> create_table_statement::raw_statement::prepa
     }
     const bool has_default_ttl = _properties.properties()->get_default_time_to_live() > 0;
 
-    auto stmt = ::make_shared<create_table_statement>(*_cf_name, _properties.properties(), _if_not_exists, _static_columns, _ttl_column, _properties.properties()->get_id());
+    auto stmt = ::make_shared<create_table_statement>(*_cf_name, _properties.properties(), _if_not_exists, _static_columns, _ttl_column, _properties.properties()->get_id(), get_prepare_context().get_dialect());
 
     bool ks_uses_tablets;
     try {

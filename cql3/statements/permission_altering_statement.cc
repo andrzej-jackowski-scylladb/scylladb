@@ -30,8 +30,9 @@ static auth::permission_set filter_applicable_permissions(const auth::permission
 
 cql3::statements::permission_altering_statement::permission_altering_statement(
                 auth::permission_set permissions, auth::resource resource,
-                const role_name& rn)
-                : _permissions(filter_applicable_permissions(permissions, resource))
+                const role_name& rn, dialect d)
+                : authorization_altering_statement(d)
+                , _permissions(filter_applicable_permissions(permissions, resource))
                 , _resource(std::move(resource))
                 , _role_name(rn.to_string()) {
 }

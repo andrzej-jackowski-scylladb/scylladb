@@ -23,7 +23,7 @@ class create_service_level_statement final : public service_level_statement {
     bool _if_not_exists;
 
 public:
-    create_service_level_statement(sstring service_level, shared_ptr<sl_prop_defs> attrs, bool if_not_exists);
+    create_service_level_statement(sstring service_level, shared_ptr<sl_prop_defs> attrs, bool if_not_exists, dialect d);
     std::unique_ptr<cql3::statements::prepared_statement> prepare(data_dictionary::database db, cql_stats &stats, const cql_config& cfg) override;
     virtual future<> check_access(query_processor& qp, const service::client_state&) const override;
     virtual future<::shared_ptr<cql_transport::messages::result_message>>

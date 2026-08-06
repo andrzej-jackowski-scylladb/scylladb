@@ -62,8 +62,8 @@ future<> drop_function_statement_base::check_access(query_processor& qp, const s
 }
 
 function_statement::function_statement(
-        functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> raw_arg_types)
-    : _name(std::move(name)), _raw_arg_types(std::move(raw_arg_types)) {}
+        functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> raw_arg_types, dialect d)
+    : schema_altering_statement(d), _name(std::move(name)), _raw_arg_types(std::move(raw_arg_types)) {}
 
 shared_ptr<cql_transport::event::schema_change> function_statement::create_schema_change(
         const functions::function& func, bool created) {
@@ -116,8 +116,8 @@ void function_statement::prepare_keyspace(const service::client_state& state) {
 }
 
 create_function_statement_base::create_function_statement_base(functions::function_name name,
-        std::vector<shared_ptr<cql3_type::raw>> raw_arg_types, bool or_replace, bool if_not_exists)
-    : function_statement(std::move(name), std::move(raw_arg_types)), _or_replace(or_replace), _if_not_exists(if_not_exists) {}
+        std::vector<shared_ptr<cql3_type::raw>> raw_arg_types, bool or_replace, bool if_not_exists, dialect d)
+    : function_statement(std::move(name), std::move(raw_arg_types), d), _or_replace(or_replace), _if_not_exists(if_not_exists) {}
 
 seastar::future<shared_ptr<functions::function>> create_function_statement_base::validate_while_executing(query_processor& qp) const {
     create_arg_types(qp);
@@ -132,8 +132,8 @@ seastar::future<shared_ptr<functions::function>> create_function_statement_base:
 }
 
 drop_function_statement_base::drop_function_statement_base(functions::function_name name,
-        std::vector<shared_ptr<cql3_type::raw>> arg_types, bool args_present, bool if_exists)
-    : function_statement(std::move(name), std::move(arg_types)), _args_present(args_present), _if_exists(if_exists) {}
+        std::vector<shared_ptr<cql3_type::raw>> arg_types, bool args_present, bool if_exists, dialect d)
+    : function_statement(std::move(name), std::move(arg_types), d), _args_present(args_present), _if_exists(if_exists) {}
 
 seastar::future<shared_ptr<db::functions::function>> drop_function_statement_base::validate_while_executing(query_processor& qp) const {
     create_arg_types(qp);

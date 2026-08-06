@@ -19,7 +19,7 @@ class list_service_level_statement final : public service_level_statement {
     sstring _service_level;
     bool _describe_all;
 public:
-    list_service_level_statement(sstring service_level, bool describe_all);
+    list_service_level_statement(sstring service_level, bool describe_all, dialect d);
     std::unique_ptr<cql3::statements::prepared_statement> prepare(data_dictionary::database db, cql_stats &stats, const cql_config& cfg) override;
     virtual seastar::shared_ptr<const metadata> get_result_metadata() const override;
     virtual future<> check_access(query_processor& qp, const service::client_state&) const override;

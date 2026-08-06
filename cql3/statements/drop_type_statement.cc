@@ -23,8 +23,9 @@ namespace cql3 {
 
 namespace statements {
 
-drop_type_statement::drop_type_statement(const ut_name& name, bool if_exists)
-    : _name{name}
+drop_type_statement::drop_type_statement(const ut_name& name, bool if_exists, dialect d)
+    : schema_altering_statement(d)
+    , _name{name}
     , _if_exists{if_exists}
 {
 }

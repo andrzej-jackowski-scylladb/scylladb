@@ -25,8 +25,8 @@ namespace statements {
 
 namespace raw {
 
-truncate_statement::truncate_statement(cf_name name, std::unique_ptr<attributes::raw> attrs)
-        : cf_statement(std::move(name))
+truncate_statement::truncate_statement(cf_name name, std::unique_ptr<attributes::raw> attrs, dialect d)
+        : cf_statement(std::move(name), d)
         , _attrs(std::move(attrs))
 {
     // Validate the attributes.

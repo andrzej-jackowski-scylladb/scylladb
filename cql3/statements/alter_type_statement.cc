@@ -24,8 +24,9 @@ namespace cql3 {
 
 namespace statements {
 
-alter_type_statement::alter_type_statement(const ut_name& name)
-    : _name{name}
+alter_type_statement::alter_type_statement(const ut_name& name, dialect d)
+    : schema_altering_statement(d)
+    , _name{name}
 {
 }
 
@@ -115,8 +116,8 @@ alter_type_statement::prepare_schema_mutations(query_processor& qp, const query_
     }
 }
 
-alter_type_statement::add_or_alter::add_or_alter(const ut_name& name, bool is_add, shared_ptr<column_identifier> field_name, shared_ptr<cql3_type::raw> field_type)
-        : alter_type_statement(name)
+alter_type_statement::add_or_alter::add_or_alter(const ut_name& name, bool is_add, shared_ptr<column_identifier> field_name, shared_ptr<cql3_type::raw> field_type, dialect d)
+        : alter_type_statement(name, d)
         , _is_add(is_add)
         , _field_name(field_name)
         , _field_type(field_type)
@@ -182,8 +183,8 @@ user_type alter_type_statement::add_or_alter::make_updated_type(data_dictionary:
     return _is_add ? do_add(db, to_update) : do_alter(db, to_update);
 }
 
-alter_type_statement::renames::renames(const ut_name& name)
-        : alter_type_statement(name)
+alter_type_statement::renames::renames(const ut_name& name, dialect d)
+        : alter_type_statement(name, d)
 {
 }
 

@@ -22,7 +22,7 @@ protected:
     virtual audit::statement_category category() const override;
 public:
     drop_aggregate_statement(functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> arg_types,
-            bool args_present, bool if_exists);
+            bool args_present, bool if_exists, dialect d);
 };
 }
 }

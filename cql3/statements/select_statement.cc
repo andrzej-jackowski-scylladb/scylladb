@@ -1990,8 +1990,9 @@ select_statement::select_statement(std::optional<cf_name> cf_name,
                                    std::optional<expr::expression> limit,
                                    std::optional<expr::expression> per_partition_limit,
                                    std::vector<::shared_ptr<cql3::column_identifier::raw>> group_by_columns,
-                                   std::unique_ptr<attributes::raw> attrs)
-    : cf_statement(std::move(cf_name))
+                                   std::unique_ptr<attributes::raw> attrs,
+                                   dialect d)
+    : cf_statement(std::move(cf_name), d)
     , _parameters(std::move(parameters))
     , _select_clause(std::move(select_clause))
     , _where_clause(std::move(where_clause))

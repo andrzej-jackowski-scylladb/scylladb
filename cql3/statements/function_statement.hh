@@ -31,7 +31,7 @@ protected:
     mutable std::vector<data_type> _arg_types;
     static shared_ptr<cql_transport::event::schema_change> create_schema_change(
             const db::functions::function& func, bool created);
-    function_statement(functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> raw_arg_types);
+    function_statement(functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> raw_arg_types, dialect d);
     void create_arg_types(query_processor& qp) const;
     data_type prepare_type(query_processor& qp, cql3_type::raw &t) const;
     virtual seastar::future<shared_ptr<db::functions::function>> validate_while_executing(query_processor&) const = 0;
@@ -47,7 +47,7 @@ protected:
     bool _if_not_exists;
 
     create_function_statement_base(functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> raw_arg_types,
-            bool or_replace, bool if_not_exists);
+            bool or_replace, bool if_not_exists, dialect d);
 
 public:
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
@@ -62,7 +62,7 @@ protected:
     bool _if_exists;
 
     drop_function_statement_base(functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> arg_types,
-            bool args_present, bool if_exists);
+            bool args_present, bool if_exists, dialect d);
 
 public:
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;

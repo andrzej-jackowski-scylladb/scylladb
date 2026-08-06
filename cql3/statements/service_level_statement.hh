@@ -41,7 +41,7 @@ public:
 
 class service_level_statement : public raw::parsed_statement, public cql_statement {
 public:
-    service_level_statement() : cql_statement(&timeout_config::other_timeout) {}
+    explicit service_level_statement(dialect d) : raw::parsed_statement(d), cql_statement(&timeout_config::other_timeout) {}
 
     virtual bool needs_guard(query_processor& qp, service::query_state& state) const override;
 

@@ -857,7 +857,7 @@ namespace raw {
 
 using ds = describe_statement;
 
-describe_statement::describe_statement(ds::describe_config config) : _config(std::move(config)), _with_internals(false) {}
+describe_statement::describe_statement(ds::describe_config config, dialect d) : parsed_statement(d), _config(std::move(config)), _with_internals(false) {}
 
 void describe_statement::with_internals_details(bool with_hashed_passwords) {
     _with_internals = internals(true);
@@ -906,70 +906,70 @@ std::unique_ptr<prepared_statement> describe_statement::prepare(data_dictionary:
     return std::make_unique<prepared_statement>(audit_info(), desc_stmt);
 }
 
-std::unique_ptr<describe_statement> describe_statement::cluster() {
-    return std::make_unique<describe_statement>(ds::describe_cluster());
+std::unique_ptr<describe_statement> describe_statement::cluster(dialect d) {
+    return std::make_unique<describe_statement>(ds::describe_cluster(), d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::schema(bool full) {
-    return std::make_unique<describe_statement>(ds::describe_schema{.full_schema = full});
+std::unique_ptr<describe_statement> describe_statement::schema(bool full, dialect d) {
+    return std::make_unique<describe_statement>(ds::describe_schema{.full_schema = full}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::keyspaces() {
-    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::keyspace});
+std::unique_ptr<describe_statement> describe_statement::keyspaces(dialect d) {
+    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::keyspace}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::keyspace(std::optional<sstring> keyspace, bool only) {
-    return std::make_unique<describe_statement>(ds::describe_keyspace{.keyspace = keyspace, .only_keyspace = only});
+std::unique_ptr<describe_statement> describe_statement::keyspace(std::optional<sstring> keyspace, bool only, dialect d) {
+    return std::make_unique<describe_statement>(ds::describe_keyspace{.keyspace = keyspace, .only_keyspace = only}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::tables() {
-    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::table});
+std::unique_ptr<describe_statement> describe_statement::tables(dialect d) {
+    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::table}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::table(const cf_name& cf_name) {
+std::unique_ptr<describe_statement> describe_statement::table(const cf_name& cf_name, dialect d) {
     auto ks = (cf_name.has_keyspace()) ? std::optional<sstring>(cf_name.get_keyspace()) : std::nullopt;
-    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::table, .keyspace = ks, .name = cf_name.get_column_family()});
+    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::table, .keyspace = ks, .name = cf_name.get_column_family()}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::index(const cf_name& cf_name) {
+std::unique_ptr<describe_statement> describe_statement::index(const cf_name& cf_name, dialect d) {
     auto ks = (cf_name.has_keyspace()) ? std::optional<sstring>(cf_name.get_keyspace()) : std::nullopt;
-    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::index, .keyspace = ks, .name = cf_name.get_column_family()});
+    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::index, .keyspace = ks, .name = cf_name.get_column_family()}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::view(const cf_name& cf_name) {
+std::unique_ptr<describe_statement> describe_statement::view(const cf_name& cf_name, dialect d) {
     auto ks = (cf_name.has_keyspace()) ? std::optional<sstring>(cf_name.get_keyspace()) : std::nullopt;
-    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::view, .keyspace = ks, .name = cf_name.get_column_family()});
+    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::view, .keyspace = ks, .name = cf_name.get_column_family()}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::types() {
-    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::type});
+std::unique_ptr<describe_statement> describe_statement::types(dialect d) {
+    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::type}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::type(const ut_name& ut_name) {
+std::unique_ptr<describe_statement> describe_statement::type(const ut_name& ut_name, dialect d) {
     auto ks = (ut_name.has_keyspace()) ? std::optional<sstring>(ut_name.get_keyspace()) : std::nullopt;
-    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::type, .keyspace = ks, .name = ut_name.get_string_type_name()});
+    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::type, .keyspace = ks, .name = ut_name.get_string_type_name()}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::functions() {
-    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::function});
+std::unique_ptr<describe_statement> describe_statement::functions(dialect d) {
+    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::function}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::function(const functions::function_name& fn_name) {
+std::unique_ptr<describe_statement> describe_statement::function(const functions::function_name& fn_name, dialect d) {
     auto ks = (fn_name.has_keyspace()) ? std::optional<sstring>(fn_name.keyspace) : std::nullopt;
-    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::function, .keyspace = ks, .name = fn_name.name});
+    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::function, .keyspace = ks, .name = fn_name.name}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::aggregates() {
-    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::aggregate});
+std::unique_ptr<describe_statement> describe_statement::aggregates(dialect d) {
+    return std::make_unique<describe_statement>(ds::describe_listing{.element_type = ds::element_type::aggregate}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::aggregate(const functions::function_name& fn_name) {
+std::unique_ptr<describe_statement> describe_statement::aggregate(const functions::function_name& fn_name, dialect d) {
     auto ks = (fn_name.has_keyspace()) ? std::optional<sstring>(fn_name.keyspace) : std::nullopt;
-    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::aggregate, .keyspace = ks, .name = fn_name.name});
+    return std::make_unique<describe_statement>(ds::describe_element{.element_type = ds::element_type::aggregate, .keyspace = ks, .name = fn_name.name}, d);
 }
 
-std::unique_ptr<describe_statement> describe_statement::generic(std::optional<sstring> keyspace, const sstring& name) {
-    return std::make_unique<describe_statement>(ds::describe_generic{.keyspace = keyspace, .name = name});
+std::unique_ptr<describe_statement> describe_statement::generic(std::optional<sstring> keyspace, const sstring& name, dialect d) {
+    return std::make_unique<describe_statement>(ds::describe_generic{.keyspace = keyspace, .name = name}, d);
 }
 
 } // namespace raw

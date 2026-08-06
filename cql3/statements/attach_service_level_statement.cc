@@ -20,8 +20,8 @@ namespace cql3 {
 
 namespace statements {
 
-attach_service_level_statement::attach_service_level_statement(sstring service_level, sstring role_name) :
-    _service_level(service_level), _role_name(role_name) {
+attach_service_level_statement::attach_service_level_statement(sstring service_level, sstring role_name, dialect d) :
+    service_level_statement(d), _service_level(service_level), _role_name(role_name) {
 }
 
 bool attach_service_level_statement::needs_guard(query_processor& qp, service::query_state& state) const {

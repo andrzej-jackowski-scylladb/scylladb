@@ -31,8 +31,9 @@ uint32_t use_statement::get_bound_terms() const
 
 namespace raw {
 
-use_statement::use_statement(sstring keyspace)
-    : _keyspace(keyspace)
+use_statement::use_statement(sstring keyspace, dialect d)
+    : parsed_statement(d)
+    , _keyspace(keyspace)
 {
 }
 

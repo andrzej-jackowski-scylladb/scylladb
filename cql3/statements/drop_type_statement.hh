@@ -21,7 +21,7 @@ class drop_type_statement : public schema_altering_statement {
     ut_name _name;
     bool _if_exists;
 public:
-    drop_type_statement(const ut_name& name, bool if_exists);
+    drop_type_statement(const ut_name& name, bool if_exists, dialect d);
 
     virtual void prepare_keyspace(const service::client_state& state) override;
 

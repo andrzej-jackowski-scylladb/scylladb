@@ -27,7 +27,7 @@ class alter_keyspace_statement : public schema_altering_statement {
     ::shared_ptr<ks_prop_defs> _attrs;
 
 public:
-    alter_keyspace_statement(sstring name, ::shared_ptr<ks_prop_defs> attrs);
+    alter_keyspace_statement(sstring name, ::shared_ptr<ks_prop_defs> attrs, dialect d);
 
     bool has_keyspace() const override {
         return true;

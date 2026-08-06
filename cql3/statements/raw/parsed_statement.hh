@@ -36,12 +36,17 @@ protected:
     prepare_context _prepare_ctx;
 
 public:
+    // Every statement is parsed under a dialect, whether a client sent it or the
+    // database built it for itself, so it is told which one as it is created and
+    // cannot be created without saying.
+    explicit parsed_statement(dialect d);
+
     virtual ~parsed_statement();
 
     prepare_context& get_prepare_context();
     const prepare_context& get_prepare_context() const;
 
-    void set_bound_variables(const std::vector<::shared_ptr<column_identifier>>& bound_names, dialect d);
+    void set_bound_variables(std::vector<::shared_ptr<column_identifier>> bound_names);
 
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) = 0;
 

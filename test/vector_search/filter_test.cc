@@ -29,8 +29,6 @@ namespace {
 /// Helper to create statement_restrictions from a WHERE clause string
 shared_ptr<const restrictions::statement_restrictions> make_restrictions(
         std::string_view where_clause, cql_test_env& env, const sstring& table_name = "t", const sstring& keyspace_name = "ks") {
-    prepare_context ctx;
-
     auto where_expr = expr::conjunction{expr::boolean_factors(cql3::util::where_clause_to_relations(where_clause, cql3::dialect{}))};
     size_t max_bind_index = 0;
     bool has_bind_markers = false;
@@ -39,7 +37,8 @@ shared_ptr<const restrictions::statement_restrictions> make_restrictions(
         max_bind_index = std::max(max_bind_index, static_cast<size_t>(bv.bind_index));
     });
     std::vector<shared_ptr<cql3::column_identifier>> bind_names(has_bind_markers ? max_bind_index + 1 : 0);
-    ctx.set_bound_variables(bind_names, cql3::internal_dialect());
+    prepare_context ctx(cql3::internal_dialect());
+    ctx.set_bound_variables(std::move(bind_names));
 
     return restrictions::analyze_statement_restrictions(env.data_dictionary(), env.local_db().find_schema(keyspace_name, table_name),
             statements::statement_type::SELECT, where_expr,

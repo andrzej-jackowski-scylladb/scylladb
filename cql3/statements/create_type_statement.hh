@@ -25,7 +25,7 @@ class create_type_statement : public schema_altering_statement {
     std::vector<::shared_ptr<cql3_type::raw>> _column_types;
     bool _if_not_exists;
 public:
-    create_type_statement(const ut_name& name, bool if_not_exists);
+    create_type_statement(const ut_name& name, bool if_not_exists, dialect d);
 
     virtual void prepare_keyspace(const service::client_state& state) override;
 

@@ -40,8 +40,9 @@ static logging::logger mylogger("alter_keyspace");
 
 bool is_system_keyspace(std::string_view keyspace);
 
-cql3::statements::alter_keyspace_statement::alter_keyspace_statement(sstring name, ::shared_ptr<ks_prop_defs> attrs)
-    : _name(name)
+cql3::statements::alter_keyspace_statement::alter_keyspace_statement(sstring name, ::shared_ptr<ks_prop_defs> attrs, dialect d)
+    : schema_altering_statement(d)
+    , _name(name)
     , _attrs(std::move(attrs))
 {}
 

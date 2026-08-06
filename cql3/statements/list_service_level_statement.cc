@@ -32,8 +32,8 @@ shared_ptr<const cql3::metadata> list_service_level_statement::get_result_metada
     return ::make_shared<cql3::metadata>(std::move(metadata));
 }
 
-list_service_level_statement::list_service_level_statement(sstring service_level, bool describe_all) :
-    _service_level(service_level), _describe_all(describe_all) {
+list_service_level_statement::list_service_level_statement(sstring service_level, bool describe_all, dialect d) :
+    service_level_statement(d), _service_level(service_level), _describe_all(describe_all) {
 }
 
 std::unique_ptr<cql3::statements::prepared_statement>

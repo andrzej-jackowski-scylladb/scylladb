@@ -30,8 +30,9 @@ shared_ptr<const cql3::metadata> cql3::statements::list_permissions_statement::g
 cql3::statements::list_permissions_statement::list_permissions_statement(
         auth::permission_set permissions,
         std::optional<auth::resource> resource,
-        std::optional<sstring> role_name, bool recursive)
-            : _permissions(permissions)
+        std::optional<sstring> role_name, bool recursive, dialect d)
+            : authorization_statement(d)
+            , _permissions(permissions)
             , _resource(std::move(resource))
             , _role_name(std::move(role_name))
             , _recursive(recursive) {

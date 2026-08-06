@@ -78,26 +78,26 @@ private:
     virtual audit::audit_info_ptr audit_info() const override;
     virtual audit::statement_category category() const override;
 public:
-    explicit describe_statement(describe_config config);
+    explicit describe_statement(describe_config config, dialect d);
     void with_internals_details(bool with_hashed_passwords);
 
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 
-    static std::unique_ptr<describe_statement> cluster();
-    static std::unique_ptr<describe_statement> schema(bool full);
-    static std::unique_ptr<describe_statement> keyspaces();
-    static std::unique_ptr<describe_statement> keyspace(std::optional<sstring> keyspace, bool only);
-    static std::unique_ptr<describe_statement> tables();
-    static std::unique_ptr<describe_statement> table(const cf_name& cf_name);
-    static std::unique_ptr<describe_statement> index(const cf_name& cf_name);
-    static std::unique_ptr<describe_statement> view(const cf_name& cf_name);
-    static std::unique_ptr<describe_statement> types();
-    static std::unique_ptr<describe_statement> type(const ut_name& ut_name);
-    static std::unique_ptr<describe_statement> functions();
-    static std::unique_ptr<describe_statement> function(const functions::function_name& fn_name);
-    static std::unique_ptr<describe_statement> aggregates();
-    static std::unique_ptr<describe_statement> aggregate(const functions::function_name& fn_name);
-    static std::unique_ptr<describe_statement> generic(std::optional<sstring> keyspace, const sstring& name);
+    static std::unique_ptr<describe_statement> cluster(dialect d);
+    static std::unique_ptr<describe_statement> schema(bool full, dialect d);
+    static std::unique_ptr<describe_statement> keyspaces(dialect d);
+    static std::unique_ptr<describe_statement> keyspace(std::optional<sstring> keyspace, bool only, dialect d);
+    static std::unique_ptr<describe_statement> tables(dialect d);
+    static std::unique_ptr<describe_statement> table(const cf_name& cf_name, dialect d);
+    static std::unique_ptr<describe_statement> index(const cf_name& cf_name, dialect d);
+    static std::unique_ptr<describe_statement> view(const cf_name& cf_name, dialect d);
+    static std::unique_ptr<describe_statement> types(dialect d);
+    static std::unique_ptr<describe_statement> type(const ut_name& ut_name, dialect d);
+    static std::unique_ptr<describe_statement> functions(dialect d);
+    static std::unique_ptr<describe_statement> function(const functions::function_name& fn_name, dialect d);
+    static std::unique_ptr<describe_statement> aggregates(dialect d);
+    static std::unique_ptr<describe_statement> aggregate(const functions::function_name& fn_name, dialect d);
+    static std::unique_ptr<describe_statement> generic(std::optional<sstring> keyspace, const sstring& name, dialect d);
 };
 
 }

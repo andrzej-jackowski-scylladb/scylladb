@@ -70,7 +70,8 @@ public:
                            bool if_not_exists,
                            column_set_type static_columns,
                            ::shared_ptr<column_identifier> ttl_column,
-                           const std::optional<table_id>& id);
+                           const std::optional<table_id>& id,
+                           dialect d);
 
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
 
@@ -114,7 +115,7 @@ private:
     bool _if_not_exists;
     cf_properties _properties;
 public:
-    raw_statement(cf_name name, bool if_not_exists);
+    raw_statement(cf_name name, bool if_not_exists, dialect d);
 
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 

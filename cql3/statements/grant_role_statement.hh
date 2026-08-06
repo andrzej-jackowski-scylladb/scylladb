@@ -28,8 +28,8 @@ class grant_role_statement final : public authorization_altering_statement {
     sstring _grantee;
 
 public:
-    grant_role_statement(const cql3::role_name& name, const cql3::role_name& grantee)
-        : _role(name.to_string()), _grantee(grantee.to_string()) {
+    grant_role_statement(const cql3::role_name& name, const cql3::role_name& grantee, dialect d)
+        : authorization_altering_statement(d), _role(name.to_string()), _grantee(grantee.to_string()) {
     }
 
     std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;

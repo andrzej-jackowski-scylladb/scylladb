@@ -17,7 +17,7 @@ class list_effective_service_level_statement final : public service_level_statem
     sstring _role_name;
 
 public:
-    list_effective_service_level_statement(sstring role_name);
+    list_effective_service_level_statement(sstring role_name, dialect d);
 
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 

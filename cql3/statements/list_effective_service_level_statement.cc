@@ -22,8 +22,8 @@ namespace cql3 {
 
 namespace statements {
 
-list_effective_service_level_statement::list_effective_service_level_statement(sstring role_name)
-: _role_name(std::move(role_name)) {}
+list_effective_service_level_statement::list_effective_service_level_statement(sstring role_name, dialect d)
+: service_level_statement(d), _role_name(std::move(role_name)) {}
 
 std::unique_ptr<prepared_statement> 
 list_effective_service_level_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {

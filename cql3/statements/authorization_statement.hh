@@ -23,7 +23,7 @@ namespace statements {
 
 class authorization_statement : public raw::parsed_statement, public cql_statement {
 public:
-    authorization_statement() : cql_statement(&timeout_config::other_timeout) {}
+    explicit authorization_statement(dialect d) : raw::parsed_statement(d), cql_statement(&timeout_config::other_timeout) {}
 
     uint32_t get_bound_terms() const override;
 
@@ -46,6 +46,8 @@ protected:
 
 class authorization_altering_statement : public authorization_statement {
 public:
+    using authorization_statement::authorization_statement;
+
     virtual bool needs_guard(query_processor& qp, service::query_state& state) const override;
 };
 

@@ -25,12 +25,12 @@ shared_ptr<const cql3::metadata> list_service_level_attachments_statement::get_r
     return ::make_shared<cql3::metadata>(metadata);
 }
 
-list_service_level_attachments_statement::list_service_level_attachments_statement(sstring role_name) :
-    _role_name(role_name), _describe_all(false) {
+list_service_level_attachments_statement::list_service_level_attachments_statement(sstring role_name, dialect d) :
+    service_level_statement(d), _role_name(role_name), _describe_all(false) {
 }
 
-list_service_level_attachments_statement::list_service_level_attachments_statement() :
-    _role_name(), _describe_all(true) {
+list_service_level_attachments_statement::list_service_level_attachments_statement(dialect d) :
+    service_level_statement(d), _role_name(), _describe_all(true) {
 }
 
 std::unique_ptr<cql3::statements::prepared_statement>

@@ -28,8 +28,9 @@ class alter_role_statement final : public authentication_altering_statement {
     role_options _options;
 
 public:
-    alter_role_statement(const cql3::role_name& name, const role_options& options)
-                : _role(name.to_string())
+    alter_role_statement(const cql3::role_name& name, const role_options& options, dialect d)
+                : authentication_altering_statement(d)
+                , _role(name.to_string())
                 , _options(std::move(options)) {
     }
 

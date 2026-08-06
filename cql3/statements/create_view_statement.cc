@@ -46,8 +46,9 @@ create_view_statement::create_view_statement(
         expr::expression where_clause,
         std::vector<::shared_ptr<cql3::column_identifier::raw>> partition_keys,
         std::vector<::shared_ptr<cql3::column_identifier::raw>> clustering_keys,
-        bool if_not_exists)
-    : schema_altering_statement{view_name}
+        bool if_not_exists,
+        dialect d)
+    : schema_altering_statement{view_name, d}
     , _base_name{base_name}
     , _select_clause{select_clause}
     , _where_clause{where_clause}
@@ -203,12 +204,11 @@ std::pair<view_ptr, cql3::cql_warnings_vec> create_view_statement::prepare_view(
     }) | std::ranges::to<std::unordered_set<const column_definition*>>();
 
     auto parameters = make_lw_shared<raw::select_statement::parameters>(raw::select_statement::parameters::orderings_type(), false, true);
-    raw::select_statement raw_select(_base_name, std::move(parameters), _select_clause, _where_clause, std::nullopt, std::nullopt, {}, std::make_unique<cql3::attributes::raw>());
-    raw_select.prepare_keyspace(keyspace());
     // The view definition is rebuilt from the schema and prepared again on every read,
     // under the internal dialect, so validating it here under the dialect of the
     // connection that happens to create the view would validate something else.
-    raw_select.set_bound_variables({}, internal_dialect());
+    raw::select_statement raw_select(_base_name, std::move(parameters), _select_clause, _where_clause, std::nullopt, std::nullopt, {}, std::make_unique<cql3::attributes::raw>(), internal_dialect());
+    raw_select.prepare_keyspace(keyspace());
 
     cql_stats ignored;
     auto prepared = raw_select.prepare(db, ignored, default_cql_config, true);

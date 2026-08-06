@@ -45,8 +45,8 @@ future<std::tuple<::shared_ptr<cql_transport::event::schema_change>, cql3::cql_w
 }
 
 drop_aggregate_statement::drop_aggregate_statement(functions::function_name name,
-        std::vector<shared_ptr<cql3_type::raw>> arg_types, bool args_present, bool if_exists)
-    : drop_function_statement_base(std::move(name), std::move(arg_types), args_present, if_exists) {}
+        std::vector<shared_ptr<cql3_type::raw>> arg_types, bool args_present, bool if_exists, dialect d)
+    : drop_function_statement_base(std::move(name), std::move(arg_types), args_present, if_exists, d) {}
 
 audit::statement_category drop_aggregate_statement::category() const {
     return audit::statement_category::DDL;

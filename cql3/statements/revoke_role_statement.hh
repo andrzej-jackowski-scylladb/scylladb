@@ -28,8 +28,8 @@ class revoke_role_statement final : public authorization_altering_statement {
     sstring _revokee;
 
 public:
-    revoke_role_statement(const cql3::role_name& name, const cql3::role_name& revokee)
-            : _role(name.to_string()), _revokee(revokee.to_string()) {
+    revoke_role_statement(const cql3::role_name& name, const cql3::role_name& revokee, dialect d)
+            : authorization_altering_statement(d), _role(name.to_string()), _revokee(revokee.to_string()) {
     }
 
     std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;

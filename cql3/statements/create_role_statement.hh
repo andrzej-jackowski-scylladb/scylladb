@@ -31,8 +31,9 @@ class create_role_statement final : public authentication_altering_statement {
 
 public:
     create_role_statement(
-            const cql3::role_name& name, const role_options& options, bool if_not_exists)
-                : _role(name.to_string())
+            const cql3::role_name& name, const role_options& options, bool if_not_exists, dialect d)
+                : authentication_altering_statement(d)
+                , _role(name.to_string())
                 , _options(std::move(options))
                 , _if_not_exists(if_not_exists) {
     }

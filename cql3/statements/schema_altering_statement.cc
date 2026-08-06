@@ -22,14 +22,14 @@ namespace statements {
 
 static logging::logger logger("schema_altering_statement");
 
-schema_altering_statement::schema_altering_statement(timeout_config_selector timeout_selector)
-    : cf_statement(cf_name())
+schema_altering_statement::schema_altering_statement(dialect d, timeout_config_selector timeout_selector)
+    : cf_statement(cf_name(), d)
     , cql_statement(timeout_selector)
     , _is_column_family_level{false} {
 }
 
-schema_altering_statement::schema_altering_statement(cf_name name, timeout_config_selector timeout_selector)
-    : cf_statement{std::move(name)}
+schema_altering_statement::schema_altering_statement(cf_name name, dialect d, timeout_config_selector timeout_selector)
+    : cf_statement{std::move(name), d}
     , cql_statement(timeout_selector)
     , _is_column_family_level{true} {
 }

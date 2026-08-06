@@ -28,7 +28,7 @@ class drop_view_statement : public schema_altering_statement {
 private:
     bool _if_exists;
 public:
-    drop_view_statement(cf_name view_name, bool if_exists);
+    drop_view_statement(cf_name view_name, bool if_exists, dialect d);
 
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
 

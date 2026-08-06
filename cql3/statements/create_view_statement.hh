@@ -47,7 +47,8 @@ public:
             expr::expression where_clause,
             std::vector<::shared_ptr<cql3::column_identifier::raw>> partition_keys,
             std::vector<::shared_ptr<cql3::column_identifier::raw>> clustering_keys,
-            bool if_not_exists);
+            bool if_not_exists,
+            dialect d);
 
     std::pair<view_ptr, cql3::cql_warnings_vec> prepare_view(data_dictionary::database db, locator::token_metadata_ptr tmptr, const view_restrictions& vr) const;
 

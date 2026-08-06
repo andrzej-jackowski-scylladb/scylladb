@@ -22,7 +22,7 @@ class drop_keyspace_statement : public schema_altering_statement {
     sstring _keyspace;
     bool _if_exists;
 public:
-    drop_keyspace_statement(const sstring& keyspace, bool if_exists);
+    drop_keyspace_statement(const sstring& keyspace, bool if_exists, dialect d);
 
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
 

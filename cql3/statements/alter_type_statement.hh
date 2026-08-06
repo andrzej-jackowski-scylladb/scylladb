@@ -26,7 +26,7 @@ class alter_type_statement : public schema_altering_statement {
 protected:
     ut_name _name;
 public:
-    alter_type_statement(const ut_name& name);
+    alter_type_statement(const ut_name& name, dialect d);
 
     virtual void prepare_keyspace(const service::client_state& state) override;
 
@@ -52,7 +52,8 @@ class alter_type_statement::add_or_alter : public alter_type_statement {
 public:
     add_or_alter(const ut_name& name, bool is_add,
                  const shared_ptr<column_identifier> field_name,
-                 const shared_ptr<cql3_type::raw> field_type);
+                 const shared_ptr<cql3_type::raw> field_type,
+                 dialect d);
     virtual user_type make_updated_type(data_dictionary::database db, user_type to_update) const override;
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 private:
@@ -66,7 +67,7 @@ class alter_type_statement::renames : public alter_type_statement {
                                                shared_ptr<column_identifier>>>;
     renames_type _renames;
 public:
-    renames(const ut_name& name);
+    renames(const ut_name& name, dialect d);
 
     void add_rename(shared_ptr<column_identifier> previous_name, shared_ptr<column_identifier> new_name);
 

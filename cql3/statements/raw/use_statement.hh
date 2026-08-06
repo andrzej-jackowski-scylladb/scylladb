@@ -27,7 +27,7 @@ private:
     const sstring _keyspace;
 
 public:
-    use_statement(sstring keyspace);
+    use_statement(sstring keyspace, dialect d);
 
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 protected:

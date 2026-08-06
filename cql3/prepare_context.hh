@@ -62,11 +62,11 @@ private:
     // is decided under a single value, even if the node configuration changes
     // while the statement is being prepared. There is no default: preparing under
     // a dialect nobody chose is worse than not preparing at all.
-    std::optional<dialect> _dialect;
+    dialect _dialect;
 
 public:
 
-    prepare_context() = default;
+    explicit prepare_context(dialect d);
 
     size_t bound_variables_size() const;
 
@@ -78,12 +78,11 @@ public:
 
     void add_variable_specification(int32_t bind_index, lw_shared_ptr<column_specification> spec);
 
-    // Hands over what the parser knows and the prepare step needs. The dialect is
-    // part of it, so that a statement built rather than parsed cannot reach the
-    // prepare step without having said which dialect it is prepared under.
-    void set_bound_variables(const std::vector<shared_ptr<column_identifier>>& bind_variable_names, dialect d);
+    // Hands over the bind variables the parser collected, which are known only
+    // once the whole statement has been parsed.
+    void set_bound_variables(std::vector<shared_ptr<column_identifier>> bind_variable_names);
 
-    const dialect& get_dialect() const;
+    const dialect& get_dialect() const noexcept { return _dialect; }
 
     void clear_pk_function_calls_cache();
 
