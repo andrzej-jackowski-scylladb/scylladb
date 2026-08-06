@@ -12,6 +12,7 @@
 
 #include "cql3/expr/expression.hh"
 #include "cql3/expr/unset.hh"
+#include "cql3/dialect.hh"
 #include "db/timeout_clock.hh"
 
 namespace qos {
@@ -81,7 +82,7 @@ public:
         std::optional<cql3::expr::expression> concurrency;
         bool bypass_large_data_guardrails = false;
 
-        std::unique_ptr<attributes> prepare(data_dictionary::database db, const sstring& ks_name, const sstring& cf_name) const;
+        std::unique_ptr<attributes> prepare(data_dictionary::database db, const sstring& ks_name, const sstring& cf_name, dialect d) const;
     private:
         lw_shared_ptr<column_specification> timestamp_receiver(const sstring& ks_name, const sstring& cf_name) const;
 

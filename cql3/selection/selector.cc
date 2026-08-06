@@ -17,12 +17,12 @@ namespace selection {
 
 std::vector<prepared_selector>
 raw_selector::to_prepared_selectors(const std::vector<::shared_ptr<raw_selector>>& raws,
-        const schema& schema, data_dictionary::database db, const sstring& ks) {
+        const schema& schema, data_dictionary::database db, const sstring& ks, dialect d) {
     std::vector<prepared_selector> r;
     r.reserve(raws.size());
     for (auto&& raw : raws) {
         r.emplace_back(prepared_selector{
-            .expr = expr::prepare_expression(raw->selectable_, db, ks, &schema, nullptr),
+            .expr = expr::prepare_expression(raw->selectable_, db, ks, &schema, nullptr, d),
             .alias = raw->alias,
         });
     }

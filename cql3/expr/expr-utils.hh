@@ -185,15 +185,15 @@ extern expression search_and_replace(const expression& e,
 // Adjust an expression for rows that were fetched using query::partition_slice::options::collections_as_maps
 expression adjust_for_collection_as_maps(const expression& e);
 
-extern expression prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver);
-std::optional<expression> try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default = false);
+// An expression is prepared under a dialect, because a relation is named after the one it
+// is prepared under. Callers preparing on behalf of a statement pass the dialect that
+// statement was parsed under, available as prepare_context::get_dialect(); those rebuilding
+// an expression from a stored schema pass internal_dialect().
+extern expression prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d);
+std::optional<expression> try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d, bool infer_default = false);
 
 // Like prepare_expression, but for a position where a relation is allowed, like the IF
-// condition of an LWT statement. A relation is named after the dialect it is prepared
-// under, so the dialect the statement was parsed under has to be passed along, and the
-// functions above, which cannot receive one, reject a relation instead of naming it under
-// a made up dialect. The dialect of a parsed statement is available as
-// prepare_context::get_dialect().
+// condition of an LWT statement. The functions above reject a relation instead.
 extern expression prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d);
 
 // Check that a prepared expression has no aggregate functions. Throws on error.

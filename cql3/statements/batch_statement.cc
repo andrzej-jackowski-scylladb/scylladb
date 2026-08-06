@@ -481,7 +481,7 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
         }
     }
 
-    auto&& prep_attrs = _attrs->prepare(db, "[batch]", "[batch]");
+    auto&& prep_attrs = _attrs->prepare(db, "[batch]", "[batch]", meta.get_dialect());
     prep_attrs->fill_prepare_context(meta);
 
     cql3::statements::batch_statement batch_statement_(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);

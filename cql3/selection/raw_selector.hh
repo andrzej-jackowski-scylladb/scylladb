@@ -12,6 +12,7 @@
 
 #include "cql3/expr/expression.hh"
 #include "cql3/column_identifier.hh"
+#include "cql3/dialect.hh"
 #include "data_dictionary/data_dictionary.hh"
 
 namespace cql3 {
@@ -37,7 +38,7 @@ public:
      * @return a list of <code>Selectable</code>s
      */
     static std::vector<prepared_selector> to_prepared_selectors(const std::vector<::shared_ptr<raw_selector>>& raws,
-            const schema& schema, data_dictionary::database db, const sstring& ks);
+            const schema& schema, data_dictionary::database db, const sstring& ks, dialect d);
 };
 
 }

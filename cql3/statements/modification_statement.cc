@@ -632,7 +632,7 @@ modification_statement::prepare(data_dictionary::database db, cql_stats& stats, 
 modification_statement::prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats) const {
     schema_ptr schema = validation::validate_column_family(db, keyspace(), column_family());
 
-    auto prepared_attributes = _attrs->prepare(db, keyspace(), column_family());
+    auto prepared_attributes = _attrs->prepare(db, keyspace(), column_family(), ctx.get_dialect());
     prepared_attributes->fill_prepare_context(ctx);
 
     auto prepared_stmt = prepare_internal(db, schema, ctx, std::move(prepared_attributes), stats);

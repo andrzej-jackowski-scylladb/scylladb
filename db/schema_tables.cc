@@ -1085,7 +1085,7 @@ shared_ptr<cql3::functions::user_aggregate> create_aggregate(replica::database& 
         auto expr = cql3::util::do_with_parser(*initcond_str, cql3::dialect{}, std::mem_fn(&cql3_parser::CqlParser::term));
         auto dummy_ident = ::make_shared<cql3::column_identifier>("", true);
         auto column_spec = make_lw_shared<cql3::column_specification>("", "", dummy_ident, state_type);
-        auto raw = cql3::expr::evaluate(prepare_expression(expr, db.as_data_dictionary(), "", nullptr, {column_spec}), cql3::query_options::DEFAULT);
+        auto raw = cql3::expr::evaluate(prepare_expression(expr, db.as_data_dictionary(), "", nullptr, {column_spec}, cql3::dialect{}), cql3::query_options::DEFAULT);
         initcond = std::move(raw).to_bytes_opt();
     }
     return ::make_shared<cql3::functions::user_aggregate>(name, initcond, std::move(state_func), std::move(reduce_func), std::move(final_func));

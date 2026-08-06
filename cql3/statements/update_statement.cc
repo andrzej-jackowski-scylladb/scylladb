@@ -322,7 +322,7 @@ insert_statement::prepare_internal(data_dictionary::database db, schema_ptr sche
         if (def->is_primary_key()) {
             relations.push_back(expr::binary_operator(expr::unresolved_identifier{col}, expr::oper_t::EQ, value));
         } else {
-            auto operation = operation::set_value(value).prepare(db, keyspace(), *def);
+            auto operation = operation::set_value(value).prepare(db, keyspace(), *def, ctx.get_dialect());
             operation->fill_prepare_context(ctx);
             stmt->add_operation(std::move(operation));
         };
@@ -352,7 +352,7 @@ insert_json_statement::prepare_internal(data_dictionary::database db, schema_ptr
     (void)_if_not_exists;
     throwing_assert(expr::is<cql3::expr::untyped_constant>(_json_value) || expr::is<cql3::expr::bind_variable>(_json_value));
     auto json_column_placeholder = ::make_shared<column_identifier>("", true);
-    auto prepared_json_value = prepare_expression(_json_value, db, "", nullptr, make_lw_shared<column_specification>("", "", json_column_placeholder, utf8_type));
+    auto prepared_json_value = prepare_expression(_json_value, db, "", nullptr, make_lw_shared<column_specification>("", "", json_column_placeholder, utf8_type), ctx.get_dialect());
     expr::verify_no_aggregate_functions(prepared_json_value, "JSON clause");
     expr::fill_prepare_context(prepared_json_value, ctx);
     auto stmt = ::make_shared<cql3::statements::insert_prepared_json_statement>(audit_info(), ctx.bound_variables_size(), schema, std::move(attrs), stats, std::move(prepared_json_value), _default_unset);
@@ -395,7 +395,7 @@ update_statement::prepare_internal(data_dictionary::database db, schema_ptr sche
             throw exceptions::invalid_request_exception(format("Unknown identifier {}", *entry.first));
         }
 
-        auto operation = entry.second->prepare(db, keyspace(), *def);
+        auto operation = entry.second->prepare(db, keyspace(), *def, ctx.get_dialect());
         operation->fill_prepare_context(ctx);
 
         if (def->is_primary_key()) {

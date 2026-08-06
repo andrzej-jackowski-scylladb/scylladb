@@ -603,7 +603,7 @@ alter_table_statement::raw_statement::prepare(data_dictionary::database db, cql_
     }
 
     auto ctx = get_prepare_context();
-    auto prepared_attrs = _attrs->prepare(db, keyspace(), column_family());
+    auto prepared_attrs = _attrs->prepare(db, keyspace(), column_family(), ctx.get_dialect());
     prepared_attrs->fill_prepare_context(ctx);
 
     return std::make_unique<prepared_statement>(audit_info(), ::make_shared<alter_table_statement>(

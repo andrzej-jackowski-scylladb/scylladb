@@ -72,7 +72,7 @@ std::optional<ann_ordering_info> get_ann_ordering_info(
         throw exceptions::invalid_request_exception("ANN ordering is only supported on float vector indexes");
     }
 
-    auto e =  expr::prepare_expression(*ann_vector, db, schema->ks_name(), nullptr, def->column_specification);
+    auto e =  expr::prepare_expression(*ann_vector, db, schema->ks_name(), nullptr, def->column_specification, ctx.get_dialect());
     expr::fill_prepare_context(e, ctx);
 
     raw::select_statement::prepared_ann_ordering_type prepared_ann_ordering = std::make_pair(std::move(def), std::move(e));

@@ -1234,7 +1234,7 @@ BOOST_AUTO_TEST_CASE(prepare_partition_column_unresolved_identifier) {
 
     expression pk_unresolved_identifier =
         unresolved_identifier{.ident = ::make_shared<column_identifier_raw>("pk", true)};
-    expression prepared = prepare_expression(pk_unresolved_identifier, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(pk_unresolved_identifier, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     expression expected = column_value(table_schema->get_column_definition("pk"));
 
@@ -1247,7 +1247,7 @@ BOOST_AUTO_TEST_CASE(prepare_clustering_column_unresolved_identifier) {
 
     expression ck_unresolved_identifier =
         unresolved_identifier{.ident = ::make_shared<column_identifier_raw>("ck", true)};
-    expression prepared = prepare_expression(ck_unresolved_identifier, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(ck_unresolved_identifier, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     expression expected = column_value(table_schema->get_column_definition("ck"));
 
@@ -1260,7 +1260,7 @@ BOOST_AUTO_TEST_CASE(prepare_regular_column_unresolved_identifier) {
 
     expression r_unresolved_identifier =
         unresolved_identifier{.ident = ::make_shared<column_identifier_raw>("r", true)};
-    expression prepared = prepare_expression(r_unresolved_identifier, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(r_unresolved_identifier, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     expression expected = column_value(table_schema->get_column_definition("r"));
 
@@ -1273,7 +1273,7 @@ BOOST_AUTO_TEST_CASE(prepare_static_column_unresolved_identifier) {
 
     expression s_unresolved_identifier =
         unresolved_identifier{.ident = ::make_shared<column_identifier_raw>("s", true)};
-    expression prepared = prepare_expression(s_unresolved_identifier, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(s_unresolved_identifier, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     expression expected = column_value(table_schema->get_column_definition("s"));
 
@@ -1314,7 +1314,7 @@ BOOST_AUTO_TEST_CASE(prepare_nested_function_calls_is_not_exponential) {
     for (unsigned depth : {1u, 2u, 4u, 8u, 12u, 16u}) {
         cql3::expr::reset_prepare_function_call_count();
         expression nested = make_nested_blob_conversions(*table_schema, depth);
-        prepare_expression(nested, db, "test_ks", table_schema.get(), nullptr);
+        prepare_expression(nested, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
         uint64_t count = cql3::expr::prepare_function_call_count();
         BOOST_TEST_MESSAGE(seastar::format("nested function depth={} prepare_function_call_count={}", depth, count));
         // Linear bound: each level should cost a small constant number of
@@ -1374,7 +1374,7 @@ BOOST_AUTO_TEST_CASE(prepare_nested_overloaded_function_probing_is_not_exponenti
         try {
             // The expression is intentionally ambiguous, so preparation throws; we
             // only care about how much probing happened on the way to the failure.
-            prepare_expression(e, db, "test_ks", table_schema.get(), nullptr);
+            prepare_expression(e, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
         } catch (const exceptions::invalid_request_exception&) {
         }
         return cql3::expr::test_assignment_function_call_count();
@@ -1430,7 +1430,7 @@ BOOST_AUTO_TEST_CASE(infer_collection_of_function_calls_keeps_narrow_overload) {
         .elements = {std::move(call)},
     };
 
-    expression prepared = prepare_expression(list_literal, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(list_literal, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     // Inferred collections are frozen; the key point is the element type is tinyint
     // (the narrow overload), not int (the literal default).
     BOOST_REQUIRE_EQUAL(type_of(prepared)->as_cql3_type().to_string(), "frozen<list<tinyint>>");
@@ -1453,7 +1453,7 @@ BOOST_AUTO_TEST_CASE(count_of_constant_is_a_count_reduction) {
         };
     };
     auto make_selection = [&] (expression call) {
-        expression prepared = prepare_expression(call, db, "test_ks", table_schema.get(), nullptr);
+        expression prepared = prepare_expression(call, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
         std::vector<selection::prepared_selector> selectors{
             selection::prepared_selector{.expr = std::move(prepared), .alias = nullptr}};
         return selection::selection::from_selectors(db, table_schema, "test_ks", selectors);
@@ -1508,11 +1508,11 @@ BOOST_AUTO_TEST_CASE(integer_literal_prefers_int_overload) {
     };
 
     // f(1): no longer ambiguous - resolves the int overload.
-    expression f1 = prepare_expression(call_with("1"), db, "test_ks", table_schema.get(), nullptr);
+    expression f1 = prepare_expression(call_with("1"), db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     BOOST_REQUIRE_EQUAL(type_of(f1)->as_cql3_type().to_string(), "int");
 
     // A literal that does not fit int defaults to bigint, so f(10000000000) -> bigint.
-    expression fbig = prepare_expression(call_with("10000000000"), db, "test_ks", table_schema.get(), nullptr);
+    expression fbig = prepare_expression(call_with("10000000000"), db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     BOOST_REQUIRE_EQUAL(type_of(fbig)->as_cql3_type().to_string(), "bigint");
 
     // A collection of such calls is no longer ambiguous either: each f(<int literal>)
@@ -1521,7 +1521,7 @@ BOOST_AUTO_TEST_CASE(integer_literal_prefers_int_overload) {
         .style = collection_constructor::style_type::list_or_vector,
         .elements = {call_with("1"), call_with("2")},
     };
-    expression prepared = prepare_expression(list_literal, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(list_literal, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     BOOST_REQUIRE_EQUAL(type_of(prepared)->as_cql3_type().to_string(), "frozen<list<int>>");
 }
 
@@ -1534,7 +1534,7 @@ BOOST_AUTO_TEST_CASE(widening_converts_value) {
     auto [db, db_data] = make_data_dictionary_database(s);
 
     // int constant against a bigint receiver -> the value is the 8-byte bigint.
-    expression p = prepare_expression(make_int_const(1234), db, "test_ks", s.get(), make_receiver(long_type));
+    expression p = prepare_expression(make_int_const(1234), db, "test_ks", s.get(), make_receiver(long_type), internal_dialect());
     BOOST_REQUIRE(type_of(p) == long_type);
     BOOST_REQUIRE_EQUAL(evaluate(p, query_options::DEFAULT), make_bigint_raw(1234));
 
@@ -1560,7 +1560,7 @@ BOOST_AUTO_TEST_CASE(widening_converts_value) {
     expression lst = collection_constructor{.style = collection_constructor::style_type::list_or_vector,
         .elements = {iob("1"),
                      untyped_constant{.partial_type = untyped_constant::type_class::integer, .raw_text = "10000000000"}}};
-    expression plst = prepare_expression(lst, db, "test_ks", s.get(), nullptr);
+    expression plst = prepare_expression(lst, db, "test_ks", s.get(), nullptr, internal_dialect());
     BOOST_REQUIRE_EQUAL(type_of(plst)->as_cql3_type().to_string(), "frozen<list<bigint>>");
     BOOST_REQUIRE_EQUAL(evaluate(plst, query_options::DEFAULT),
                         make_list_raw({make_bigint_raw(1), make_bigint_raw(10000000000)}));
@@ -1572,7 +1572,7 @@ BOOST_AUTO_TEST_CASE(prepare_column_value) {
     auto [db, db_data] = make_data_dictionary_database(table_schema);
 
     expression cval = column_value(table_schema->get_column_definition("pk"));
-    expression prepared = prepare_expression(cval, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(cval, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     BOOST_REQUIRE_EQUAL(cval, prepared);
 }
 
@@ -1588,7 +1588,7 @@ BOOST_AUTO_TEST_CASE(prepare_subscript_list) {
         subscript{.val = unresolved_identifier{.ident = ::make_shared<column_identifier_raw>("r", true)},
                   .sub = make_int_untyped("123")};
 
-    expression prepared = prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     expression expected = subscript{.val = column_value(table_schema->get_column_definition("r")),
                                     .sub = make_int_const(123),
@@ -1609,7 +1609,7 @@ BOOST_AUTO_TEST_CASE(prepare_subscript_map) {
         subscript{.val = unresolved_identifier{.ident = ::make_shared<column_identifier_raw>("r", true)},
                   .sub = make_bool_untyped("true")};
 
-    expression prepared = prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     expression expected = subscript{
         .val = column_value(table_schema->get_column_definition("r")), .sub = make_bool_const(true), .type = utf8_type};
@@ -1629,7 +1629,7 @@ BOOST_AUTO_TEST_CASE(prepare_subscript_set) {
         subscript{.val = unresolved_identifier{.ident = ::make_shared<column_identifier_raw>("r", true)},
                   .sub = make_int_untyped("123")};
 
-    BOOST_REQUIRE_THROW(prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr),
+    BOOST_REQUIRE_THROW(prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr, internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -1645,7 +1645,7 @@ BOOST_AUTO_TEST_CASE(prepare_subscript_list_checks_type) {
         subscript{.val = unresolved_identifier{.ident = ::make_shared<column_identifier_raw>("r", true)},
                   .sub = make_bool_untyped("true")};
 
-    BOOST_REQUIRE_THROW(prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr),
+    BOOST_REQUIRE_THROW(prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr, internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -1661,7 +1661,7 @@ BOOST_AUTO_TEST_CASE(prepare_subscript_map_checks_type) {
         subscript{.val = unresolved_identifier{.ident = ::make_shared<column_identifier_raw>("r", true)},
                   .sub = make_int_untyped("123")};
 
-    BOOST_REQUIRE_THROW(prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr),
+    BOOST_REQUIRE_THROW(prepare_expression(sub, db, "test_ks", table_schema.get(), nullptr, internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -1677,7 +1677,7 @@ BOOST_AUTO_TEST_CASE(prepare_token) {
                             unresolved_identifier{::make_shared<column_identifier_raw>("p2", true)},
                             unresolved_identifier{::make_shared<column_identifier_raw>("p3", true)}});
 
-    expression prepared = prepare_expression(tok, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(tok, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     std::vector<expression> expected_args = {column_value(table_schema->get_column_definition("p1")),
                                  column_value(table_schema->get_column_definition("p2")),
@@ -1700,7 +1700,7 @@ BOOST_AUTO_TEST_CASE(prepare_token_no_args) {
 
     expression tok = make_token(std::vector<expression>());
 
-    BOOST_REQUIRE_THROW(prepare_expression(tok, db, "test_ks", table_schema.get(), nullptr),
+    BOOST_REQUIRE_THROW(prepare_expression(tok, db, "test_ks", table_schema.get(), nullptr, internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -1720,10 +1720,10 @@ BOOST_AUTO_TEST_CASE(cast_type_hint_lossless_widening) {
         return untyped_constant{.partial_type = untyped_constant::type_class::floating_point, .raw_text = x};
     };
     auto ok = [&] (expression e) {
-        BOOST_CHECK_NO_THROW(prepare_expression(e, db, "test_ks", s.get(), nullptr));
+        BOOST_CHECK_NO_THROW(prepare_expression(e, db, "test_ks", s.get(), nullptr, internal_dialect()));
     };
     auto rej = [&] (expression e) {
-        BOOST_CHECK_THROW(prepare_expression(e, db, "test_ks", s.get(), nullptr), exceptions::invalid_request_exception);
+        BOOST_CHECK_THROW(prepare_expression(e, db, "test_ks", s.get(), nullptr, internal_dialect()), exceptions::invalid_request_exception);
     };
 
     // Integer-chain widenings (lossless) - accepted
@@ -1750,10 +1750,10 @@ BOOST_AUTO_TEST_CASE(cast_type_hint_lossless_widening) {
 
     // The hint's result, in turn, widens to a wider receiver (consumer coerces) ...
     BOOST_CHECK_NO_THROW(prepare_expression(
-        cc(byte_type, i("1")), db, "test_ks", s.get(), make_receiver(long_type)));   // (tinyint)1 -> bigint
+        cc(byte_type, i("1")), db, "test_ks", s.get(), make_receiver(long_type), internal_dialect()));   // (tinyint)1 -> bigint
     // ... but is not assignable to a narrower receiver.
     BOOST_CHECK_THROW(prepare_expression(
-        cc(long_type, i("1")), db, "test_ks", s.get(), make_receiver(byte_type)),    // (bigint)1 -> tinyint
+        cc(long_type, i("1")), db, "test_ks", s.get(), make_receiver(byte_type), internal_dialect()),    // (bigint)1 -> tinyint
         exceptions::invalid_request_exception);
 }
 
@@ -1769,7 +1769,7 @@ BOOST_AUTO_TEST_CASE(cast_type_hint_widening_inside_tuple) {
         make_string_untyped("x"),
     }};
     data_type tup_type = tuple_type_impl::get_instance({long_type, utf8_type});
-    expression prepared = prepare_expression(tup, db, "test_ks", s.get(), make_receiver(tup_type));
+    expression prepared = prepare_expression(tup, db, "test_ks", s.get(), make_receiver(tup_type), internal_dialect());
 
     cql3::raw_value val = evaluate(prepared, query_options::DEFAULT);
     bytes b = std::move(val).to_bytes();
@@ -1786,7 +1786,7 @@ BOOST_AUTO_TEST_CASE(cast_type_hint_widening_reversed_receiver) {
 
     expression e = cast{.arg = make_int_untyped("5"), .type = cql3_type::raw::from(short_type)};
     data_type reversed_int = reversed_type_impl::get_instance(int32_type);
-    expression prepared = prepare_expression(e, db, "test_ks", s.get(), make_receiver(reversed_int));
+    expression prepared = prepare_expression(e, db, "test_ks", s.get(), make_receiver(reversed_int), internal_dialect());
 
     cql3::raw_value val = evaluate(prepared, query_options::DEFAULT);
     bytes b = std::move(val).to_bytes();
@@ -1803,7 +1803,7 @@ BOOST_AUTO_TEST_CASE(prepare_cast_int_int) {
 
     ::lw_shared_ptr<column_specification> receiver = make_receiver(int32_type);
 
-    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), receiver);
+    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), receiver, internal_dialect());
 
     expression expected = cast{.arg = make_int_const(123), .type = int32_type};
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -1819,7 +1819,7 @@ BOOST_AUTO_TEST_CASE(prepare_cast_int_short) {
 
     ::lw_shared_ptr<column_specification> receiver = make_receiver(short_type);
 
-    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), receiver);
+    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), receiver, internal_dialect());
 
     expression expected = cast{.arg = make_smallint_const(123), .type = short_type};
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -1835,7 +1835,7 @@ BOOST_AUTO_TEST_CASE(prepare_cast_text_int) {
 
     ::lw_shared_ptr<column_specification> receiver = make_receiver(short_type);
 
-    BOOST_REQUIRE_THROW(prepare_expression(cast_expr, db, "test_ks", table_schema.get(), receiver),
+    BOOST_REQUIRE_THROW(prepare_expression(cast_expr, db, "test_ks", table_schema.get(), receiver, internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -1851,7 +1851,7 @@ BOOST_AUTO_TEST_CASE(prepare_cast_bind_var_no_receiver) {
     expression cast_expr =
         cast{.arg = bind_variable{.bind_index = 0, .receiver = nullptr}, .type = cql3_type::raw::from(utf8_type)};
 
-    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     // Can't do a direct comparison because we don't have prepared.arg.receiver
     BOOST_REQUIRE(is<cast>(prepared) && is<bind_variable>(as<cast>(prepared).arg));
@@ -1873,7 +1873,7 @@ BOOST_AUTO_TEST_CASE(prepare_cast_bind_var_text_type_hint_and_text_receiver) {
     expression cast_expr =
         cast{.arg = bind_variable{.bind_index = 0, .receiver = nullptr}, .type = cql3_type::raw::from(utf8_type)};
 
-    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), make_receiver(utf8_type));
+    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), make_receiver(utf8_type), internal_dialect());
 
     // Can't do a direct comparison because we don't have prepared.arg.receiver
     BOOST_REQUIRE(is<cast>(prepared) && is<bind_variable>(as<cast>(prepared).arg));
@@ -1895,7 +1895,7 @@ BOOST_AUTO_TEST_CASE(prepare_cast_bind_var_int_type_hint_and_int_receiver) {
     expression cast_expr =
         cast{.arg = bind_variable{.bind_index = 0, .receiver = nullptr}, .type = cql3_type::raw::from(int32_type)};
 
-    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), make_receiver(int32_type));
+    expression prepared = prepare_expression(cast_expr, db, "test_ks", table_schema.get(), make_receiver(int32_type), internal_dialect());
 
     // Can't do a direct comparison because we don't have prepared.arg.receiver
     BOOST_REQUIRE(is<cast>(prepared) && is<bind_variable>(as<cast>(prepared).arg));
@@ -1918,7 +1918,7 @@ BOOST_AUTO_TEST_CASE(prepare_cast_bind_var_text_type_hint_and_int_receiver) {
     expression cast_expr =
         cast{.arg = bind_variable{.bind_index = 0, .receiver = nullptr}, .type = cql3_type::raw::from(utf8_type)};
 
-    BOOST_REQUIRE_THROW(prepare_expression(cast_expr, db, "test_ks", table_schema.get(), make_receiver(int32_type)),
+    BOOST_REQUIRE_THROW(prepare_expression(cast_expr, db, "test_ks", table_schema.get(), make_receiver(int32_type), internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -1931,7 +1931,7 @@ BOOST_AUTO_TEST_CASE(prepare_cast_bind_var_int_type_hint_and_text_receiver) {
     expression cast_expr =
         cast{.arg = bind_variable{.bind_index = 0, .receiver = nullptr}, .type = cql3_type::raw::from(int32_type)};
 
-    BOOST_REQUIRE_THROW(prepare_expression(cast_expr, db, "test_ks", table_schema.get(), make_receiver(utf8_type)),
+    BOOST_REQUIRE_THROW(prepare_expression(cast_expr, db, "test_ks", table_schema.get(), make_receiver(utf8_type), internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -1941,7 +1941,7 @@ BOOST_AUTO_TEST_CASE(prepare_null) {
 
     expression null_expr = make_untyped_null();
 
-    expression prepared = prepare_expression(null_expr, db, "test_ks", table_schema.get(), make_receiver(int32_type));
+    expression prepared = prepare_expression(null_expr, db, "test_ks", table_schema.get(), make_receiver(int32_type), internal_dialect());
     expression expected = constant::make_null(int32_type);
     BOOST_REQUIRE_EQUAL(prepared, expected);
 }
@@ -1952,7 +1952,7 @@ BOOST_AUTO_TEST_CASE(prepare_null_no_type_fails) {
     auto [db, db_data] = make_data_dictionary_database(table_schema);
 
     expression null_expr = make_untyped_null();
-    BOOST_REQUIRE_THROW(prepare_expression(null_expr, db, "test_ks", table_schema.get(), nullptr),
+    BOOST_REQUIRE_THROW(prepare_expression(null_expr, db, "test_ks", table_schema.get(), nullptr, internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -1964,7 +1964,7 @@ BOOST_AUTO_TEST_CASE(prepare_bind_variable) {
 
     ::lw_shared_ptr<column_specification> receiver = make_receiver(int32_type);
 
-    expression prepared = prepare_expression(bind_var, db, "test_ks", table_schema.get(), receiver);
+    expression prepared = prepare_expression(bind_var, db, "test_ks", table_schema.get(), receiver, internal_dialect());
 
     expression expected = bind_variable{
         .bind_index = 1,
@@ -1980,7 +1980,7 @@ BOOST_AUTO_TEST_CASE(prepare_bind_variable_no_receiver) {
 
     expression bind_var = bind_variable{.bind_index = 1, .receiver = nullptr};
 
-    BOOST_REQUIRE_THROW(prepare_expression(bind_var, db, "test_ks", table_schema.get(), nullptr),
+    BOOST_REQUIRE_THROW(prepare_expression(bind_var, db, "test_ks", table_schema.get(), nullptr, internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -1990,7 +1990,7 @@ BOOST_AUTO_TEST_CASE(prepare_untyped_constant_no_receiver) {
 
     expression untyped = make_int_untyped("1337");
 
-    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     BOOST_REQUIRE(expr::type_of(prepared) == int32_type);
     BOOST_REQUIRE_EQUAL(prepared, make_int_const(1337));
 }
@@ -2001,7 +2001,7 @@ BOOST_AUTO_TEST_CASE(prepare_untyped_constant_bool) {
 
     expression untyped = make_bool_untyped("true");
 
-    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(boolean_type));
+    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(boolean_type), internal_dialect());
     expression expected = make_bool_const(true);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2013,7 +2013,7 @@ BOOST_AUTO_TEST_CASE(prepare_untyped_constant_int8) {
 
     expression untyped = make_int_untyped("13");
 
-    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(byte_type));
+    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(byte_type), internal_dialect());
     expression expected = make_tinyint_const(13);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2025,7 +2025,7 @@ BOOST_AUTO_TEST_CASE(prepare_untyped_constant_int16) {
 
     expression untyped = make_int_untyped("1337");
 
-    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(short_type));
+    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(short_type), internal_dialect());
     expression expected = make_smallint_const(1337);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2038,7 +2038,7 @@ BOOST_AUTO_TEST_CASE(prepare_untyped_constant_int32) {
     expression untyped =
         make_int_untyped("13377331");
 
-    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(int32_type));
+    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(int32_type), internal_dialect());
     expression expected = make_int_const(13377331);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2051,7 +2051,7 @@ BOOST_AUTO_TEST_CASE(prepare_untyped_constant_int64) {
     expression untyped =
         make_int_untyped("1337733113377331");
 
-    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(long_type));
+    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(long_type), internal_dialect());
     expression expected = make_bigint_const(1337733113377331);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2064,7 +2064,7 @@ BOOST_AUTO_TEST_CASE(prepare_untyped_constant_text) {
     expression untyped =
         make_string_untyped("scylla_is_the_best");
 
-    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(utf8_type));
+    expression prepared = prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(utf8_type), internal_dialect());
     expression expected = make_text_const("scylla_is_the_best");
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2077,7 +2077,7 @@ BOOST_AUTO_TEST_CASE(prepare_untyped_constant_bad_int) {
     expression untyped =
         make_int_untyped("not_integer_text");
 
-    BOOST_REQUIRE_THROW(prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(int32_type)),
+    BOOST_REQUIRE_THROW(prepare_expression(untyped, db, "test_ks", table_schema.get(), make_receiver(int32_type), internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -2094,7 +2094,7 @@ BOOST_AUTO_TEST_CASE(prepare_tuple_constructor_no_receiver) {
             },
         .type = nullptr};
 
-    expression prepared = prepare_expression(tup, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(tup, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     data_type expected_type = tuple_type_impl::get_instance({int32_type, int32_type, utf8_type});
     BOOST_REQUIRE(expr::type_of(prepared) == expected_type);
 }
@@ -2115,7 +2115,7 @@ BOOST_AUTO_TEST_CASE(prepare_tuple_constructor) {
     data_type tup_type = tuple_type_impl::get_instance({int32_type, short_type, utf8_type});
     ::lw_shared_ptr<column_specification> receiver = make_receiver(tup_type);
 
-    expression prepared = prepare_expression(tup, db, "test_ks", table_schema.get(), receiver);
+    expression prepared = prepare_expression(tup, db, "test_ks", table_schema.get(), receiver, internal_dialect());
     expression expected =
         make_tuple_const({make_int_const(123), make_smallint_const(456), make_text_const("some text")},
                          {int32_type, short_type, utf8_type});
@@ -2140,7 +2140,7 @@ BOOST_AUTO_TEST_CASE(prepare_tuple_constructor_of_columns) {
 
     data_type tup_type = tuple_type_impl::get_instance({int32_type, utf8_type, byte_type});
 
-    expression prepared = prepare_expression(tup, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(tup, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     expression expected = tuple_constructor{.elements =
                                                 {
                                                     column_value(table_schema->get_column_definition("c1")),
@@ -2168,7 +2168,7 @@ BOOST_AUTO_TEST_CASE(prepare_list_or_vector_collection_constructor) {
 
     data_type list_type = list_type_impl::get_instance(long_type, true);
 
-    expression prepared_list = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type));
+    expression prepared_list = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type), internal_dialect());
     expression expected_list =
         make_list_const({make_bigint_const(123), make_bigint_const(456), make_bigint_const(789)}, long_type);
 
@@ -2176,7 +2176,7 @@ BOOST_AUTO_TEST_CASE(prepare_list_or_vector_collection_constructor) {
 
     data_type vector_type = vector_type_impl::get_instance(long_type, 3);
 
-    expression prepared_vector = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(vector_type));
+    expression prepared_vector = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(vector_type), internal_dialect());
     expression expected_vector =
         make_vector_const({make_bigint_const(123), make_bigint_const(456), make_bigint_const(789)}, long_type);
 
@@ -2193,7 +2193,7 @@ BOOST_AUTO_TEST_CASE(prepare_list_collection_constructor_empty_nonfrozen) {
 
     data_type list_type = list_type_impl::get_instance(long_type, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type), internal_dialect());
     expression expected = constant::make_null(list_type);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2210,7 +2210,7 @@ BOOST_AUTO_TEST_CASE(prepare_list_or_vector_collection_constructor_empty_frozen)
 
     data_type list_type = list_type_impl::get_instance(long_type, false);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type), internal_dialect());
     expression expected = constant(make_list_raw({}), list_type);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2218,7 +2218,7 @@ BOOST_AUTO_TEST_CASE(prepare_list_or_vector_collection_constructor_empty_frozen)
     data_type vector_type = vector_type_impl::get_instance(long_type, 0);
 
     // Should throw because we can't prepare an empty vector.
-    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(vector_type)),
+    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(vector_type), internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -2236,7 +2236,7 @@ BOOST_AUTO_TEST_CASE(prepare_list_or_vector_collection_constructor_no_receiver) 
             },
         .type = nullptr};
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     data_type expected_type = list_type_impl::get_instance(int32_type, false);
     BOOST_REQUIRE(expr::type_of(prepared) == expected_type);
 }
@@ -2257,7 +2257,7 @@ BOOST_AUTO_TEST_CASE(prepare_list_collection_constructor_with_bind_var) {
 
     data_type list_type = list_type_impl::get_instance(long_type, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type), internal_dialect());
 
     // prepared bind_variable contains a receiver which we need to extract
     // in order to prepare an equal expected value.
@@ -2299,7 +2299,7 @@ BOOST_AUTO_TEST_CASE(prepare_vector_collection_constructor_with_bind_var) {
 
     data_type vector_type = vector_type_impl::get_instance(long_type, 3);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(vector_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(vector_type), internal_dialect());
 
     // prepared bind_variable contains a receiver which we need to extract
     // in order to prepare an equal expected value.
@@ -2336,13 +2336,13 @@ BOOST_AUTO_TEST_CASE(prepare_list_or_vector_collection_constructor_with_null) {
 
     data_type list_type = list_type_impl::get_instance(int32_type, true);
 
-    BOOST_REQUIRE_EQUAL(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type)),
+    BOOST_REQUIRE_EQUAL(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(list_type), internal_dialect()),
                         make_int_list_const({123, 456, std::nullopt}));
 
     data_type vector_type = vector_type_impl::get_instance(int32_type, 3);
 
     // Should throw because we can't prepare a vector with null element.
-    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(vector_type)),
+    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(vector_type), internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -2362,7 +2362,7 @@ BOOST_AUTO_TEST_CASE(prepare_set_collection_constructor) {
 
     data_type set_type = set_type_impl::get_instance(short_type, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type), internal_dialect());
     expression expected =
         make_set_const({make_smallint_const(123), make_smallint_const(456), make_smallint_const(789)}, short_type);
 
@@ -2379,7 +2379,7 @@ BOOST_AUTO_TEST_CASE(prepare_set_collection_constructor_empty_nonfrozen) {
 
     data_type set_type = set_type_impl::get_instance(short_type, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type), internal_dialect());
     expression expected = constant::make_null(set_type);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2394,7 +2394,7 @@ BOOST_AUTO_TEST_CASE(prepare_set_collection_constructor_empty_frozen) {
 
     data_type set_type = set_type_impl::get_instance(short_type, false);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type), internal_dialect());
     expression expected = constant(make_set_raw({}), set_type);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2414,7 +2414,7 @@ BOOST_AUTO_TEST_CASE(prepare_set_collection_constructor_no_receiver) {
             },
         .type = nullptr};
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     data_type expected_type = set_type_impl::get_instance(int32_type, false);
     BOOST_REQUIRE(expr::type_of(prepared) == expected_type);
 }
@@ -2435,7 +2435,7 @@ BOOST_AUTO_TEST_CASE(prepare_set_collection_constructor_with_bind_var) {
 
     data_type set_type = set_type_impl::get_instance(long_type, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type), internal_dialect());
 
     // Can't directly compare because the bind variable receiver is created inside prepare_expression
     // prepared bind_variable contains a receiver which we need to extract
@@ -2474,7 +2474,7 @@ BOOST_AUTO_TEST_CASE(prepare_set_collection_constructor_with_null) {
 
     data_type set_type = set_type_impl::get_instance(short_type, true);
 
-    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type)),
+    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(set_type), internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -2505,7 +2505,7 @@ BOOST_AUTO_TEST_CASE(prepare_map_collection_constructor) {
 
     data_type map_type = map_type_impl::get_instance(short_type, long_type, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type), internal_dialect());
 
     expression expected = make_map_const({{make_smallint_const(1), make_bigint_const(10)},
                                           {make_smallint_const(2), make_bigint_const(-20)},
@@ -2525,7 +2525,7 @@ BOOST_AUTO_TEST_CASE(prepare_map_collection_constructor_empty_nonfrozen) {
 
     data_type map_type = map_type_impl::get_instance(short_type, long_type, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type), internal_dialect());
     expression expected = constant::make_null(map_type);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2540,7 +2540,7 @@ BOOST_AUTO_TEST_CASE(prepare_map_collection_constructor_empty_frozen) {
 
     data_type map_type = map_type_impl::get_instance(short_type, long_type, false);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type), internal_dialect());
     expression expected = constant(make_map_raw({}), map_type);
 
     BOOST_REQUIRE_EQUAL(prepared, expected);
@@ -2571,7 +2571,7 @@ BOOST_AUTO_TEST_CASE(prepare_map_collection_constructor_no_receiver) {
                 },
             .type = nullptr};
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     data_type expected_type = map_type_impl::get_instance(int32_type, int32_type, false);
     BOOST_REQUIRE(expr::type_of(prepared) == expected_type);
 }
@@ -2603,7 +2603,7 @@ BOOST_AUTO_TEST_CASE(prepare_map_collection_constructor_with_bind_var_key) {
 
     data_type map_type = map_type_impl::get_instance(short_type, long_type, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type), internal_dialect());
 
     // prepared bind_variable contains a receiver which we need to extract
     // in order to prepare an equal expected value.
@@ -2660,7 +2660,7 @@ BOOST_AUTO_TEST_CASE(prepare_map_collection_constructor_with_bind_var_value) {
 
     data_type map_type = map_type_impl::get_instance(short_type, long_type, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type), internal_dialect());
 
     // prepared bind_variable contains a receiver which we need to extract
     // in order to prepare an equal expected value.
@@ -2722,7 +2722,7 @@ BOOST_AUTO_TEST_CASE(prepare_map_collection_constructor_null_key) {
 
     data_type map_type = map_type_impl::get_instance(short_type, long_type, true);
 
-    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type)),
+    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type), internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -2748,7 +2748,7 @@ BOOST_AUTO_TEST_CASE(prepare_map_collection_constructor_null_value) {
 
     data_type map_type = map_type_impl::get_instance(short_type, long_type, true);
 
-    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type)),
+    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(map_type), internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -2765,13 +2765,13 @@ BOOST_AUTO_TEST_CASE(prepare_collection_constructor_checks_style_type) {
 
     data_type set_type = set_type_impl::get_instance(int32_type, true);
     expression prepared =
-        prepare_expression(set_constructor, db, "test_ks", table_schema.get(), make_receiver(set_type));
+        prepare_expression(set_constructor, db, "test_ks", table_schema.get(), make_receiver(set_type), internal_dialect());
     expression expected = make_set_const({make_int_const(123)}, int32_type);
     BOOST_REQUIRE_EQUAL(prepared, expected);
 
     data_type list_type = list_type_impl::get_instance(int32_type, true);
     BOOST_REQUIRE_THROW(
-        prepare_expression(set_constructor, db, "test_ks", table_schema.get(), make_receiver(list_type)),
+        prepare_expression(set_constructor, db, "test_ks", table_schema.get(), make_receiver(list_type), internal_dialect()),
         exceptions::invalid_request_exception);
 }
 
@@ -2795,7 +2795,7 @@ BOOST_AUTO_TEST_CASE(prepare_usertype_constructor) {
     data_type user_type = user_type_impl::get_instance("test_ks", "test_ut", {"field1", "field2", "field3"},
                                                        {short_type, long_type, utf8_type}, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type), internal_dialect());
 
     raw_value expected_raw = make_tuple_raw({make_smallint_raw(152), make_bigint_raw(987), make_text_raw("ututu")});
     expression expected = constant(expected_raw, user_type);
@@ -2821,7 +2821,7 @@ BOOST_AUTO_TEST_CASE(prepare_usertype_constructor_with_null) {
     data_type user_type = user_type_impl::get_instance("test_ks", "test_ut", {"field1", "field2", "field3"},
                                                        {short_type, long_type, utf8_type}, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type), internal_dialect());
 
     raw_value expected_raw = make_tuple_raw({make_smallint_raw(152), raw_value::make_null(), make_text_raw("ututu")});
     expression expected = constant(expected_raw, user_type);
@@ -2847,7 +2847,7 @@ BOOST_AUTO_TEST_CASE(prepare_usertype_constructor_missing_field) {
     data_type user_type = user_type_impl::get_instance("test_ks", "test_ut", {"field1", "field2", "field3"},
                                                        {short_type, long_type, utf8_type}, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type), internal_dialect());
 
     raw_value expected_raw = make_tuple_raw({make_smallint_raw(152), raw_value::make_null(), make_text_raw("ututu")});
     expression expected = constant(expected_raw, user_type);
@@ -2872,7 +2872,7 @@ BOOST_AUTO_TEST_CASE(prepare_usertype_constructor_no_receiver) {
 
     expression constructor = usertype_constructor{.elements = constructor_elements, .type = nullptr};
 
-    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), nullptr),
+    BOOST_REQUIRE_THROW(prepare_expression(constructor, db, "test_ks", table_schema.get(), nullptr, internal_dialect()),
                         exceptions::invalid_request_exception);
 }
 
@@ -2895,7 +2895,7 @@ BOOST_AUTO_TEST_CASE(prepare_usertype_constructor_with_bind_variable) {
     data_type user_type = user_type_impl::get_instance("test_ks", "test_ut", {"field1", "field2", "field3"},
                                                        {short_type, long_type, utf8_type}, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type), internal_dialect());
 
     // prepared bind_variable contains a receiver which we need to extract
     // in order to prepare an equal expected value.
@@ -2940,7 +2940,7 @@ BOOST_AUTO_TEST_CASE(prepare_usertype_constructor_with_bind_variable_and_missing
     data_type user_type = user_type_impl::get_instance("test_ks", "test_ut", {"field1", "field2", "field3"},
                                                        {short_type, long_type, utf8_type}, true);
 
-    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type));
+    expression prepared = prepare_expression(constructor, db, "test_ks", table_schema.get(), make_receiver(user_type), internal_dialect());
 
     // prepared bind_variable contains a receiver which we need to extract
     // in order to prepare an equal expected value.
@@ -2972,12 +2972,12 @@ BOOST_AUTO_TEST_CASE(prepare_constant_no_receiver) {
     auto [db, db_data] = make_data_dictionary_database(table_schema);
 
     expression int_const = make_int_const(1234);
-    expression prepared_int_const = prepare_expression(int_const, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared_int_const = prepare_expression(int_const, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(int_const, prepared_int_const);
 
     expression text_const = make_text_const("helo");
-    expression prepared_text_const = prepare_expression(text_const, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared_text_const = prepare_expression(text_const, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(text_const, prepared_text_const);
 }
@@ -2988,24 +2988,24 @@ BOOST_AUTO_TEST_CASE(prepare_constant_with_receiver) {
 
     expression int_const = make_int_const(1234);
     expression prepared_int_const =
-        prepare_expression(int_const, db, "test_ks", table_schema.get(), make_receiver(int32_type));
+        prepare_expression(int_const, db, "test_ks", table_schema.get(), make_receiver(int32_type), internal_dialect());
 
     BOOST_REQUIRE_EQUAL(int_const, prepared_int_const);
 
     // Preparing an int32 with an int64 receiver succeeds - int32 widens to int64.
     // The value must be converted to the 8-byte bigint representation, not relabelled.
     expression prepared_int_long =
-        prepare_expression(int_const, db, "test_ks", table_schema.get(), make_receiver(long_type));
+        prepare_expression(int_const, db, "test_ks", table_schema.get(), make_receiver(long_type), internal_dialect());
     BOOST_REQUIRE(expr::type_of(prepared_int_long) == long_type);
     BOOST_REQUIRE_EQUAL(evaluate(prepared_int_long, query_options::DEFAULT), make_bigint_raw(1234));
 
     // Preparing an int32 with text receiver fails
-    BOOST_REQUIRE_THROW(prepare_expression(int_const, db, "test_ks", table_schema.get(), make_receiver(utf8_type)),
+    BOOST_REQUIRE_THROW(prepare_expression(int_const, db, "test_ks", table_schema.get(), make_receiver(utf8_type), internal_dialect()),
                         exceptions::invalid_request_exception);
 
     // Preparing an int32 with blob receiver works - ints can be implicitly converted to blobs
     expression prepared_int_blob =
-        prepare_expression(int_const, db, "test_ks", table_schema.get(), make_receiver(bytes_type));
+        prepare_expression(int_const, db, "test_ks", table_schema.get(), make_receiver(bytes_type), internal_dialect());
     expression expected_blob = constant(make_int_const(1234).value, bytes_type);
 
     BOOST_REQUIRE_EQUAL(prepared_int_blob, expected_blob);
@@ -3019,7 +3019,7 @@ BOOST_AUTO_TEST_CASE(prepare_writetime_ttl) {
         auto receiver = receiver_type
                 ? make_lw_shared<column_specification>("foo", "bar", make_shared<column_identifier>("ci", false), *receiver_type)
                 : nullptr;
-        return prepare_expression(e, db, "test_ks", table_schema.get(), receiver);
+        return prepare_expression(e, db, "test_ks", table_schema.get(), receiver, internal_dialect());
     };
 
     for (auto kind : {column_mutation_attribute::attribute_kind::ttl, column_mutation_attribute::attribute_kind::writetime}) {
@@ -3819,7 +3819,7 @@ BOOST_AUTO_TEST_CASE(evaluate_field_selection) {
 
 
     auto prepare_and_evaluate = [&,db = db] (const expression& e, const evaluation_inputs& inputs) {
-        auto prepared = prepare_expression(e, db, "", schema.get(), nullptr);
+        auto prepared = prepare_expression(e, db, "", schema.get(), nullptr, internal_dialect());
         return evaluate(prepared, inputs);
     };
 
@@ -5062,9 +5062,9 @@ BOOST_AUTO_TEST_CASE(prepare_token_func_without_receiver) {
         .func = functions::function_name::native_function("token"),
         .args = {column_value(table_schema->get_column_definition("pk1")), make_column("pk2"), make_int_const(1234)}};
 
-    expression prepared_no_receiver = prepare_expression(token_fun_call, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared_no_receiver = prepare_expression(token_fun_call, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
     expression prepared_with_receiver =
-        prepare_expression(token_fun_call, db, "test_ks", table_schema.get(), make_receiver(long_type));
+        prepare_expression(token_fun_call, db, "test_ks", table_schema.get(), make_receiver(long_type), internal_dialect());
 
     auto check_prepared = [&](const expression& prepared) {
         const function_call* prepared_token = as_if<function_call>(&prepared);
@@ -5120,7 +5120,7 @@ BOOST_AUTO_TEST_CASE(is_token_function_prepared_token) {
         .func = functions::function_name::native_function("token"),
         .args = {make_int_untyped("123"), make_int_untyped("443"), make_bind_variable(0, int32_type)}};
 
-    expression prepared = prepare_expression(token_fun, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(token_fun, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(is_token_function(prepared), true);
 }
@@ -5131,7 +5131,7 @@ BOOST_AUTO_TEST_CASE(is_token_function_prepared_nontoken) {
 
     function_call now_fun{.func = functions::function_name::native_function("now"), .args = {}};
 
-    expression prepared = prepare_expression(now_fun, db, "test_ks", table_schema.get(), nullptr);
+    expression prepared = prepare_expression(now_fun, db, "test_ks", table_schema.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(is_token_function(prepared), false);
 }
@@ -5150,7 +5150,7 @@ BOOST_AUTO_TEST_CASE(is_partition_token_for_schema_test) {
     expression unprepared_token_one_pk =
         function_call{.func = functions::function_name::native_function("token"), .args = {make_column("pk")}};
     expression prepared_token_one_pk =
-        prepare_expression(unprepared_token_one_pk, db1, "test_ks", schema1.get(), nullptr);
+        prepare_expression(unprepared_token_one_pk, db1, "test_ks", schema1.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_one_pk, *schema1), true);
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_one_pk, *schema2), false);
@@ -5161,7 +5161,7 @@ BOOST_AUTO_TEST_CASE(is_partition_token_for_schema_test) {
         function_call{.func = functions::function_name::native_function("token"),
                       .args = {make_column("pk1"), make_column("pk2"), make_column("pk3")}};
     expression prepared_token_three_pk =
-        prepare_expression(unprepared_token_three_pk, db2, "test_ks", schema2.get(), nullptr);
+        prepare_expression(unprepared_token_three_pk, db2, "test_ks", schema2.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_one_pk, *schema1), true);
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_one_pk, *schema2), false);
@@ -5172,7 +5172,7 @@ BOOST_AUTO_TEST_CASE(is_partition_token_for_schema_test) {
     // Try preparing token(pk1, pk2), fail
     expression unprepared_token_two_pk = function_call{.func = functions::function_name::native_function("token"),
                                                        .args = {make_column("pk1"), make_column("pk2")}};
-    BOOST_REQUIRE_THROW(prepare_expression(unprepared_token_two_pk, db2, "test_ks", schema2.get(), nullptr),
+    BOOST_REQUIRE_THROW(prepare_expression(unprepared_token_two_pk, db2, "test_ks", schema2.get(), nullptr, internal_dialect()),
                         exceptions::invalid_request_exception);
 
     // Prepare token(pk1, pk3, pk2) - wrong order of pk columns
@@ -5180,7 +5180,7 @@ BOOST_AUTO_TEST_CASE(is_partition_token_for_schema_test) {
         function_call{.func = functions::function_name::native_function("token"),
                       .args = {make_column("pk1"), make_column("pk3"), make_column("pk2")}};
     expression prepared_token_pk1_pk3_pk2 =
-        prepare_expression(unprepared_token_pk1_pk3_pk2, db2, "test_ks", schema2.get(), nullptr);
+        prepare_expression(unprepared_token_pk1_pk3_pk2, db2, "test_ks", schema2.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_pk1_pk3_pk2, *schema1), false);
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_pk1_pk3_pk2, *schema2), false);
@@ -5191,7 +5191,7 @@ BOOST_AUTO_TEST_CASE(is_partition_token_for_schema_test) {
         function_call{.func = functions::function_name::native_function("token"),
                       .args = {make_column("pk1"), make_column("pk1"), make_column("pk3")}};
     expression prepared_token_pk1_pk1_pk2 =
-        prepare_expression(unprepared_token_pk1_pk1_pk2, db2, "test_ks", schema2.get(), nullptr);
+        prepare_expression(unprepared_token_pk1_pk1_pk2, db2, "test_ks", schema2.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_pk1_pk1_pk2, *schema1), false);
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_pk1_pk1_pk2, *schema2), false);
@@ -5200,7 +5200,7 @@ BOOST_AUTO_TEST_CASE(is_partition_token_for_schema_test) {
     // Prepare token(ck)
     expression unprepared_token_ck =
         function_call{.func = functions::function_name::native_function("token"), .args = {make_column("ck")}};
-    expression prepared_token_ck = prepare_expression(unprepared_token_ck, db1, "test_ks", schema1.get(), nullptr);
+    expression prepared_token_ck = prepare_expression(unprepared_token_ck, db1, "test_ks", schema1.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_ck, *schema1), false);
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_ck, *schema2), false);
@@ -5213,7 +5213,7 @@ BOOST_AUTO_TEST_CASE(is_partition_token_for_schema_test) {
                       .args = {make_int_untyped("1"), make_int_untyped("2"), make_bind_variable(0, int32_type)}};
 
     expression prepared_token_other =
-        prepare_expression(unprepared_token_other, db2, "test_ks", schema2.get(), nullptr);
+        prepare_expression(unprepared_token_other, db2, "test_ks", schema2.get(), nullptr, internal_dialect());
 
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_other, *schema1), false);
     BOOST_REQUIRE_EQUAL(is_partition_token_for_schema(prepared_token_other, *schema2), false);
@@ -5239,7 +5239,7 @@ BOOST_AUTO_TEST_CASE(test_aggregation_depth) {
                     },
             }
     );
-    avg_sum_r = prepare_expression(avg_sum_r, db, "test_ks", schema.get(), nullptr);
+    avg_sum_r = prepare_expression(avg_sum_r, db, "test_ks", schema.get(), nullptr, internal_dialect());
     
     BOOST_REQUIRE_EQUAL(aggregation_depth(avg_sum_r), 2);
 
@@ -5288,7 +5288,7 @@ BOOST_AUTO_TEST_CASE(test_levellize_aggregation_depth) {
                     },
             }
     );
-    e = prepare_expression(e, db, "test_ks", schema.get(), nullptr);
+    e = prepare_expression(e, db, "test_ks", schema.get(), nullptr, internal_dialect());
     BOOST_REQUIRE_EQUAL(aggregation_depth(e), 2);
     e = levellize_aggregation_depth(e, 3); // Note: aggregation_depth(e) == 2 before the call
     BOOST_REQUIRE_EQUAL(aggregation_depth(e), 3);
@@ -5315,7 +5315,7 @@ BOOST_AUTO_TEST_CASE(test_levellize_aggregation_depth) {
                     },
             }
     );
-    e2 = prepare_expression(e2, db, "test_ks", schema.get(), nullptr);
+    e2 = prepare_expression(e2, db, "test_ks", schema.get(), nullptr, internal_dialect());
     BOOST_REQUIRE_EQUAL(aggregation_depth(e2), 2);
     e2 = levellize_aggregation_depth(e2, 3); // Note: aggregation_depth(e) == 2 before the call
     BOOST_REQUIRE_EQUAL(aggregation_depth(e2), 3);

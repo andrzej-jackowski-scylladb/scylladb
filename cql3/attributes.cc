@@ -171,26 +171,26 @@ void attributes::fill_prepare_context(prepare_context& ctx) {
     }
 }
 
-std::unique_ptr<attributes> attributes::raw::prepare(data_dictionary::database db, const sstring& ks_name, const sstring& cf_name) const {
+std::unique_ptr<attributes> attributes::raw::prepare(data_dictionary::database db, const sstring& ks_name, const sstring& cf_name, dialect d) const {
     std::optional<expr::expression> ts, ttl, to, conc;
 
     if (timestamp.has_value()) {
-        ts = prepare_expression(*timestamp, db, ks_name, nullptr, timestamp_receiver(ks_name, cf_name));
+        ts = prepare_expression(*timestamp, db, ks_name, nullptr, timestamp_receiver(ks_name, cf_name), d);
         verify_no_aggregate_functions(*ts, "USING clause");
     }
 
     if (time_to_live.has_value()) {
-        ttl = prepare_expression(*time_to_live, db, ks_name, nullptr, time_to_live_receiver(ks_name, cf_name));
+        ttl = prepare_expression(*time_to_live, db, ks_name, nullptr, time_to_live_receiver(ks_name, cf_name), d);
         verify_no_aggregate_functions(*time_to_live, "USING clause");
     }
 
     if (timeout.has_value()) {
-        to = prepare_expression(*timeout, db, ks_name, nullptr, timeout_receiver(ks_name, cf_name));
+        to = prepare_expression(*timeout, db, ks_name, nullptr, timeout_receiver(ks_name, cf_name), d);
         verify_no_aggregate_functions(*timeout, "USING clause");
     }
 
     if (concurrency.has_value()) {
-        conc = prepare_expression(*concurrency, db, ks_name, nullptr, concurrency_receiver(ks_name, cf_name));
+        conc = prepare_expression(*concurrency, db, ks_name, nullptr, concurrency_receiver(ks_name, cf_name), d);
         verify_no_aggregate_functions(*concurrency, "USING clause");
     }
 

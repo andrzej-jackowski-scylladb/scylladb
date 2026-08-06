@@ -37,8 +37,8 @@ truncate_statement::truncate_statement(cf_name name, std::unique_ptr<attributes:
 
 std::unique_ptr<prepared_statement> truncate_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
     schema_ptr schema = validation::validate_column_family(db, keyspace(), column_family());
-    auto prepared_attributes = _attrs->prepare(db, keyspace(), column_family());
     auto ctx = get_prepare_context();
+    auto prepared_attributes = _attrs->prepare(db, keyspace(), column_family(), ctx.get_dialect());
     prepared_attributes->fill_prepare_context(ctx);
     auto stmt = ::make_shared<cql3::statements::truncate_statement>(std::move(schema), std::move(prepared_attributes));
     return std::make_unique<prepared_statement>(audit_info(), std::move(stmt));

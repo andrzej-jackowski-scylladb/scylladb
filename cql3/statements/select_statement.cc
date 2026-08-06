@@ -2078,7 +2078,7 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
     schema_ptr schema = _parameters->is_mutation_fragments() ? mutation_fragments_select_statement::generate_output_schema(underlying_schema) : underlying_schema;
     prepare_context& ctx = get_prepare_context();
 
-    auto prepared_selectors = selection::raw_selector::to_prepared_selectors(_select_clause, *schema, db, _no_from ? _session_keyspace : keyspace());
+    auto prepared_selectors = selection::raw_selector::to_prepared_selectors(_select_clause, *schema, db, _no_from ? _session_keyspace : keyspace(), ctx.get_dialect());
 
     prepared_selectors = maybe_jsonize_select_clause(std::move(prepared_selectors), db, schema);
 
@@ -2102,7 +2102,7 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
             select_all.push_back(::make_shared<selection::raw_selector>(
                 expr::unresolved_identifier(std::move(name)), nullptr));
         }
-        prepared_selectors = selection::raw_selector::to_prepared_selectors(select_all, *schema, db, keyspace());
+        prepared_selectors = selection::raw_selector::to_prepared_selectors(select_all, *schema, db, keyspace(), ctx.get_dialect());
     }
 
     for (auto& ps : prepared_selectors) {
@@ -2202,7 +2202,7 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
     }
 
     ::shared_ptr<cql3::statements::select_statement> stmt;
-    auto prepared_attrs = _attrs->prepare(db, keyspace(), column_family());
+    auto prepared_attrs = _attrs->prepare(db, keyspace(), column_family(), ctx.get_dialect());
     prepared_attrs->fill_prepare_context(ctx);
 
     auto all_aggregates = [] (const std::vector<selection::prepared_selector>& prepared_selectors) {
@@ -2387,7 +2387,7 @@ select_statement::prepare_limit(data_dictionary::database db, prepare_context& c
         return std::nullopt;
     }
 
-    expr::expression prep_limit = prepare_expression(*limit, db, keyspace(), nullptr, limit_receiver());
+    expr::expression prep_limit = prepare_expression(*limit, db, keyspace(), nullptr, limit_receiver(), ctx.get_dialect());
     expr::verify_no_aggregate_functions(prep_limit, "LIMIT clause");
     expr::fill_prepare_context(prep_limit, ctx);
     return prep_limit;

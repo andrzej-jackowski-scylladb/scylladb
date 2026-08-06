@@ -17,6 +17,7 @@
 #include "cql3/column_identifier.hh"
 #include "cql3/expr/expression.hh"
 #include "cql3/expr/unset.hh"
+#include "cql3/dialect.hh"
 
 #include <optional>
 
@@ -136,7 +137,7 @@ public:
          * be a true column.
          * @return the prepared update operation.
          */
-        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver) const = 0;
+        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver, dialect d) const = 0;
 
         /**
          * @return whether this operation can be applied alongside the {@code
@@ -173,7 +174,7 @@ public:
          * @param receiver the "column" this operation applies to.
          * @return the prepared delete operation.
          */
-        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver) const = 0;
+        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver, dialect d) const = 0;
     };
 
     class set_value;
@@ -190,7 +191,7 @@ public:
             : _selector(std::move(selector)), _value(std::move(value)), _by_uuid(by_uuid) {
         }
 
-        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver) const override;
+        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver, dialect d) const override;
 
         virtual bool is_compatible_with(const std::unique_ptr<raw_update>& other) const override;
     };
@@ -206,7 +207,7 @@ public:
             : _field(std::move(field)), _value(std::move(value)) {
         }
 
-        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver) const override;
+        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver, dialect d) const override;
 
         virtual bool is_compatible_with(const std::unique_ptr<raw_update>& other) const override;
     };
@@ -223,7 +224,7 @@ public:
 
         virtual const column_identifier::raw& affected_column() const override;
 
-        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver) const override;
+        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver, dialect d) const override;
     };
 
     class addition : public raw_update {
@@ -235,7 +236,7 @@ public:
                 : _value(std::move(value)) {
         }
 
-        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver) const override;
+        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver, dialect d) const override;
 
         virtual bool is_compatible_with(const std::unique_ptr<raw_update>& other) const override;
     };
@@ -249,7 +250,7 @@ public:
                 : _value(std::move(value)) {
         }
 
-        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver) const override;
+        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver, dialect d) const override;
 
         virtual bool is_compatible_with(const std::unique_ptr<raw_update>& other) const override;
     };
@@ -263,7 +264,7 @@ public:
                 : _value(std::move(value)) {
         }
 
-        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver) const override;
+        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver, dialect d) const override;
 
         virtual bool is_compatible_with(const std::unique_ptr<raw_update>& other) const override;
     };
@@ -278,7 +279,7 @@ public:
                 : _id(std::move(id)), _element(std::move(element)) {
         }
         virtual const column_identifier::raw& affected_column() const override;
-        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver) const override;
+        virtual std::unique_ptr<operation> prepare(data_dictionary::database db, const sstring& keyspace, const column_definition& receiver, dialect d) const override;
     };
 };
 

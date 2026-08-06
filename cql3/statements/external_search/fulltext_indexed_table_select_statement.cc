@@ -96,7 +96,7 @@ std::optional<bm25_ordering_info> get_bm25_ordering_info(
     }
 
     // Prepare the scoring function expression to resolve column references and function
-    auto prepared_expr = expr::prepare_expression(scoring_ord->func_expr, db, schema->ks_name(), schema.get(), nullptr);
+    auto prepared_expr = expr::prepare_expression(scoring_ord->func_expr, db, schema->ks_name(), schema.get(), nullptr, ctx.get_dialect());
     expr::fill_prepare_context(prepared_expr, ctx);
 
     // Verify this is a BM25 function call

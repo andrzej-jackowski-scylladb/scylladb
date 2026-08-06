@@ -80,13 +80,15 @@ struct call_probe_key_hash {
 };
 
 struct prepare_state {
+    // The dialect the whole preparation happens under, constant for its duration.
+    dialect d;
     // Test-only: when false, probes are neither looked up nor stored, so a test can
     // observe the un-memoized (exponential) probing cost for comparison. The constructor
     // seeds it from the test switch (always true in release).
     bool memo_enabled = true;
     std::unordered_map<call_probe_key, assignment_testable::test_result, call_probe_key_hash> test_assignment_function_call;
 
-    prepare_state();
+    explicit prepare_state(dialect d);
 };
 
 // State-threaded overloads of the public entry points. The public (state-less) functions
@@ -94,17 +96,15 @@ struct prepare_state {
 // same state by reference, so it is never global.
 static std::optional<expression> try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, bool allow_unresolved = false);
 static assignment_testable::test_result test_assignment(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state);
-static expression prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, const dialect* d = nullptr);
+static expression prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, bool allow_relations = false);
 static assignment_testable::test_result test_assignment_all(const std::vector<expression>& to_test, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver, prepare_state& state);
 static ::shared_ptr<assignment_testable> as_assignment_testable(expression e, std::optional<data_type> type_opt, prepare_state& state);
 
-// A relation is named after the dialect it is prepared under, so the dialect travels along
-// the expressions that can contain a relation and nowhere else - what a relation is built
-// from is an ordinary expression, which cannot contain one. The dialect is null when
-// preparing an expression that is not allowed to contain a relation, which then refuses one
-// rather than naming it under a dialect nobody chose.
-static std::optional<expression> try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, const dialect* d);
-static std::optional<expression> prepare_relation(const binary_operator& binop, data_dictionary::database db, const schema* schema_opt, const lw_shared_ptr<column_specification>& receiver, const dialect* d);
+// A relation may only appear in the expressions that are allowed to contain one - what a
+// relation is built from is an ordinary expression, which cannot contain one. Preparing
+// one anywhere else is refused rather than performed.
+static std::optional<expression> try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, bool allow_relations);
+static std::optional<expression> prepare_relation(const binary_operator& binop, data_dictionary::database db, const schema* schema_opt, const lw_shared_ptr<column_specification>& receiver, prepare_state& state, bool allow_relations);
 
 struct inferred_elements {
     data_type element_type;
@@ -1409,7 +1409,7 @@ void set_prepare_memo_enabled(bool enabled) {
     g_prepare_memo_enabled = enabled;
 }
 
-prepare_state::prepare_state() : memo_enabled(g_prepare_memo_enabled) {}
+prepare_state::prepare_state(dialect d) : d(d), memo_enabled(g_prepare_memo_enabled) {}
 
 std::optional<expression>
 prepare_function_call(const expr::function_call& fc, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, bool allow_unresolved) {
@@ -1581,7 +1581,7 @@ std::optional<expression> prepare_conjunction(const conjunction& conj,
                                               const schema* schema_opt,
                                               lw_shared_ptr<column_specification> receiver,
                                               prepare_state& state,
-                                              const dialect* d) {
+                                              bool allow_relations) {
     if (receiver.get() != nullptr && receiver->type->without_reversed().get_kind() != abstract_type::kind::boolean) {
         throw exceptions::invalid_request_exception(
             format("AND conjunction produces a boolean value, which doesn't match the type: {} of {}",
@@ -1607,7 +1607,7 @@ std::optional<expression> prepare_conjunction(const conjunction& conj,
     bool all_terminal = true;
     for (const expression& child : conj.children) {
         std::optional<expression> prepared_child =
-            try_prepare_expression_allowing_relations(child, db, keyspace, schema_opt, child_receiver, /*infer_default=*/false, state, d);
+            try_prepare_expression_allowing_relations(child, db, keyspace, schema_opt, child_receiver, /*infer_default=*/false, state, allow_relations);
         if (!prepared_child.has_value()) {
             throw exceptions::invalid_request_exception(fmt::format("Could not infer type of {}", child));
         }
@@ -1692,17 +1692,17 @@ prepare_column_mutation_attribute(
 }
 
 static std::optional<expression>
-prepare_relation(const binary_operator& binop, data_dictionary::database db, const schema* schema_opt, const lw_shared_ptr<column_specification>& receiver, const dialect* d) {
+prepare_relation(const binary_operator& binop, data_dictionary::database db, const schema* schema_opt, const lw_shared_ptr<column_specification>& receiver, prepare_state& state, bool allow_relations) {
     if (receiver.get() != nullptr && &receiver->type->without_reversed() != boolean_type.get()) {
         throw exceptions::invalid_request_exception(
             format("binary operator produces a boolean value, which doesn't match the type: {} of {}",
                    receiver->type->name(), receiver->name->text()));
     }
 
-    if (!d) {
+    if (!allow_relations) {
         on_internal_error(expr_logger, "preparing a relation in an expression that is not allowed to contain one");
     }
-    binary_operator result = prepare_binary_operator(binop, db, *schema_opt, *d);
+    binary_operator result = prepare_binary_operator(binop, db, *schema_opt, state.d);
 
     // A binary operator where both sides of the equation are known can be evaluated to a boolean value.
     // This only applies to operators in the CQL order, operations in the clustering order should only be
@@ -1714,19 +1714,19 @@ prepare_relation(const binary_operator& binop, data_dictionary::database db, con
 }
 
 static std::optional<expression>
-try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, const dialect* d) {
+try_prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default, prepare_state& state, bool allow_relations) {
     if (auto* conj = as_if<conjunction>(&expr)) {
-        return prepare_conjunction(*conj, db, keyspace, schema_opt, std::move(receiver), state, d);
+        return prepare_conjunction(*conj, db, keyspace, schema_opt, std::move(receiver), state, allow_relations);
     }
     if (auto* binop = as_if<binary_operator>(&expr)) {
-        return prepare_relation(*binop, db, schema_opt, receiver, d);
+        return prepare_relation(*binop, db, schema_opt, receiver, state, allow_relations);
     }
     return try_prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), infer_default, state);
 }
 
 std::optional<expression>
-try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, bool infer_default) {
-    prepare_state state;
+try_prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d, bool infer_default) {
+    prepare_state state(d);
     return try_prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), infer_default, state);
 }
 
@@ -1746,11 +1746,11 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
             return value;
         },
         [&] (const binary_operator& binop) -> std::optional<expression> {
-            return prepare_relation(binop, db, schema_opt, receiver, /*d=*/nullptr);
+            return prepare_relation(binop, db, schema_opt, receiver, state, /*allow_relations=*/false);
         },
         [&] (const unary_operator& uo) -> std::optional<expression> {
             // Prepare the operand; unary_operator preserves its operand's type.
-            auto prepared_operand = try_prepare_expression(uo.operand, db, keyspace, schema_opt, receiver);
+            auto prepared_operand = try_prepare_expression(uo.operand, db, keyspace, schema_opt, receiver, /*infer_default=*/false, state);
             if (!prepared_operand) {
                 return std::nullopt;
             }
@@ -1762,7 +1762,7 @@ try_prepare_expression(const expression& expr, data_dictionary::database db, con
             return result;
         },
         [&] (const conjunction& conj) -> std::optional<expression> {
-            return prepare_conjunction(conj, db, keyspace, schema_opt, receiver, state, /*d=*/nullptr);
+            return prepare_conjunction(conj, db, keyspace, schema_opt, receiver, state, /*allow_relations=*/false);
         },
         [] (const column_value& cv) -> std::optional<expression> {
             return cv;
@@ -1864,7 +1864,9 @@ column_mutation_attribute_test_assignment(const column_mutation_attribute& cma, 
 
 assignment_testable::test_result
 test_assignment(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver) {
-    prepare_state state;
+    // Testing assignability never reaches a relation, so the dialect it would be
+    // named under is not observable from here.
+    prepare_state state(internal_dialect());
     return test_assignment(expr, db, keyspace, schema_opt, receiver, state);
 }
 
@@ -2044,27 +2046,27 @@ test_assignment_any_size_float_vector(const expression& expr) {
 }
 
 expression
-prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver) {
-    prepare_state state;
+prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d) {
+    prepare_state state(d);
     return prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), state);
 }
 
 expression
 prepare_expression_allowing_relations(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, dialect d) {
-    prepare_state state;
-    return prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), state, &d);
+    prepare_state state(d);
+    return prepare_expression(expr, db, keyspace, schema_opt, std::move(receiver), state, /*allow_relations=*/true);
 }
 
 static expression
-prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, const dialect* d) {
+prepare_expression(const expression& expr, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, lw_shared_ptr<column_specification> receiver, prepare_state& state, bool allow_relations) {
     // Pass 1: contextual typing. Expressions without a type (untyped constants,
     // collection literals) yield nullopt when no receiver constrains them.
-    auto e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/false, state, d);
+    auto e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/false, state, allow_relations);
     // Pass 2: default-type inference. The same prepare is retried with infer_default
     // enabled, so untyped constants and collection literals fall back to a default
     // type at the point where no receiver is available.
     if (!e_opt) {
-        e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/true, state, d);
+        e_opt = try_prepare_expression_allowing_relations(expr, db, keyspace, schema_opt, receiver, /*infer_default=*/true, state, allow_relations);
     }
     if (!e_opt) {
         throw exceptions::invalid_request_exception(fmt::format("Could not infer type of {}", expr));
@@ -2078,7 +2080,7 @@ prepare_expression(const expression& expr, data_dictionary::database db, const s
 
 assignment_testable::test_result
 test_assignment_all(const std::vector<expression>& to_test, data_dictionary::database db, const sstring& keyspace, const schema* schema_opt, const column_specification& receiver) {
-    prepare_state state;
+    prepare_state state(internal_dialect());
     return test_assignment_all(to_test, db, keyspace, schema_opt, receiver, state);
 }
 
@@ -2346,7 +2348,7 @@ optimize_like(const expression& e) {
 }
 
 binary_operator prepare_binary_operator(binary_operator binop, data_dictionary::database db, const schema& table_schema, const dialect& d) {
-    std::optional<expression> prepared_lhs_opt = try_prepare_expression(binop.lhs, db, table_schema.ks_name(), &table_schema, {});
+    std::optional<expression> prepared_lhs_opt = try_prepare_expression(binop.lhs, db, table_schema.ks_name(), &table_schema, {}, d);
     if (!prepared_lhs_opt) {
         throw exceptions::invalid_request_exception(fmt::format("Could not infer type of {}", binop.lhs));
     }
@@ -2358,7 +2360,7 @@ binary_operator prepare_binary_operator(binary_operator binop, data_dictionary::
     }
 
     lw_shared_ptr<column_specification> rhs_receiver = get_rhs_receiver(lhs_receiver, binop.op, d);
-    expression prepared_rhs = prepare_expression(binop.rhs, db, table_schema.ks_name(), &table_schema, rhs_receiver);
+    expression prepared_rhs = prepare_expression(binop.rhs, db, table_schema.ks_name(), &table_schema, rhs_receiver, d);
 
     // IS NOT NULL requires an additional check that the RHS is NULL.
     // Otherwise things like `int_col IS NOT 123` would be allowed - the types match, but the value is wrong.
