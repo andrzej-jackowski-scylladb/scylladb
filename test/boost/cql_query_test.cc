@@ -41,6 +41,10 @@
 #include "db/config.hh"
 #include "db/extensions.hh"
 #include "cql3/cql_config.hh"
+#include "cql3/query_processor.hh"
+#include "cql3/statements/raw/truncate_statement.hh"
+#include "cql3/statements/raw/use_statement.hh"
+#include "cql3/statements/use_statement.hh"
 #include "test/lib/exception_utils.hh"
 #include "service/qos/qos_common.hh"
 #include "utils/rjson.hh"
@@ -7177,6 +7181,84 @@ SEASTAR_TEST_CASE(test_a_parsed_statement_gets_only_the_markers_of_its_text) {
         for (auto& stmt : named) {
             BOOST_REQUIRE_EQUAL(stmt->prepare(qp.db(), qp.get_cql_stats(), qp.get_cql_config())->bound_names.size(), 1);
         }
+    });
+}
+
+namespace {
+
+// No statement gets this wrong today: each of them counts its markers off the
+// same context it describes them in. Stand in for one that stops doing so, and
+// tells the client what its marker stands for while reporting that it takes no
+// value at all.
+class statement_that_will_not_read_its_marker : public cql3::statements::raw::parsed_statement {
+    audit::statement_category category() const override {
+        return audit::statement_category::QUERY;
+    }
+
+    audit::audit_info_ptr audit_info() const override {
+        return audit::audit::create_audit_info(category(), sstring(), sstring());
+    }
+
+    std::unique_ptr<cql3::statements::prepared_statement> do_prepare(data_dictionary::database db,
+            cql3::prepare_context& ctx, cql3::cql_stats& stats, const cql3::cql_config& cfg) override {
+        ctx.add_variable_specification(0, cql3::make_column_spec("ks", "tbl", "[timeout]", duration_type));
+        // USE has no marker to bind, whatever the context it is handed says
+        return std::make_unique<cql3::statements::prepared_statement>(audit_info(),
+                ::make_shared<cql3::statements::use_statement>("ks"), ctx, std::vector<uint16_t>());
+    }
+};
+
+}
+
+// A statement that drops a marker looks exactly like a statement with nothing
+// to bind, so nothing goes wrong until a client sends a value for the marker
+// the parser promised it. Preparing is the last place the two can be told
+// apart, so make sure it still does.
+SEASTAR_TEST_CASE(test_preparing_rejects_a_statement_that_drops_a_marker) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE ks.tbl (pk int PRIMARY KEY)").get();
+
+        const auto do_abort = set_abort_on_internal_error(false);
+        auto reset_abort = defer([do_abort] noexcept {
+            set_abort_on_internal_error(do_abort);
+        });
+
+        auto& qp = e.local_qp();
+        auto prepare = [&qp] (cql3::statements::raw::parsed_statement& stmt) {
+            // One unnamed marker, as the parser reports a single '?'
+            stmt.set_bound_variables(std::vector<::shared_ptr<cql3::column_identifier>>(1), cql3::dialect{});
+            return stmt.prepare(qp.db(), qp.get_cql_stats(), qp.get_cql_config());
+        };
+
+        // USE builds its prepared statement without a context, so a marker never
+        // reaches the client at all
+        cql3::statements::raw::use_statement use("ks");
+        BOOST_REQUIRE_EXCEPTION(prepare(use), std::runtime_error,
+                exception_predicate::message_contains("bound_variables_size"));
+
+        // A TRUNCATE with no USING clause has nothing to describe the marker
+        // with, so the client would be asked for a value standing for nothing
+        cql3::cf_name cf;
+        cf.set_keyspace("ks", true);
+        cf.set_column_family("tbl", true);
+        cql3::statements::raw::truncate_statement truncate(std::move(cf), std::make_unique<cql3::attributes::raw>());
+        BOOST_REQUIRE_EXCEPTION(prepare(truncate), std::runtime_error,
+                exception_predicate::message_contains("all_of"));
+
+        // A statement can also describe its marker and still report that it
+        // takes no value, so nothing would read what the client sends for it
+        statement_that_will_not_read_its_marker unread;
+        BOOST_REQUIRE_EXCEPTION(prepare(unread), std::runtime_error,
+                exception_predicate::message_contains("get_bound_terms"));
+
+        // The same TRUNCATE with a marker to bind the timeout to still prepares
+        cql3::cf_name timed_cf;
+        timed_cf.set_keyspace("ks", true);
+        timed_cf.set_column_family("tbl", true);
+        auto attrs = std::make_unique<cql3::attributes::raw>();
+        attrs->timeout = cql3::expr::bind_variable{0};
+        cql3::statements::raw::truncate_statement timed(std::move(timed_cf), std::move(attrs));
+        BOOST_REQUIRE_EQUAL(prepare(timed)->bound_names.size(), 1);
     });
 }
 

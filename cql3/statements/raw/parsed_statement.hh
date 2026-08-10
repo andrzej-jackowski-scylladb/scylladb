@@ -62,6 +62,9 @@ protected:
     // nobody reads them.
     virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) = 0;
 
+    // Fails if the statement did not account for every marker it was given.
+    void verify_bind_markers(const prepared_statement& prepared, const prepare_context& ctx) const;
+
     virtual audit::statement_category category() const = 0;
     virtual audit::audit_info_ptr audit_info() const = 0;
 };

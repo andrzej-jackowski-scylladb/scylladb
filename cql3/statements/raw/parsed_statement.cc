@@ -10,6 +10,9 @@
 
 #include "parsed_statement.hh"
 
+#include <algorithm>
+
+#include "utils/assert.hh"
 #include "cql3/statements/prepared_statement.hh"
 #include "cql3/column_specification.hh"
 
@@ -31,7 +34,23 @@ std::unique_ptr<prepared_statement> parsed_statement::prepare(data_dictionary::d
     if (_dialect) {
         ctx.set_bound_variables(_bound_names, *_dialect);
     }
-    return do_prepare(db, ctx, stats, cfg);
+    auto prepared = do_prepare(db, ctx, stats, cfg);
+    // A statement given no markers has none to drop, and an unprepared
+    // statement pays for its prepare on every run.
+    if (!_bound_names.empty()) {
+        verify_bind_markers(*prepared, ctx);
+    }
+    return prepared;
+}
+
+// A marker the parser saw but the statement never accounted for cannot be
+// bound, and leaves the statement reading values it was never told about. One
+// left without a specification is just as unbindable: the client is asked for a
+// value without being told what it stands for.
+void parsed_statement::verify_bind_markers(const prepared_statement& prepared, const prepare_context& ctx) const {
+    throwing_assert(prepared.bound_names.size() == ctx.bound_variables_size());
+    throwing_assert(std::ranges::all_of(prepared.bound_names, [] (auto& spec) { return bool(spec); }));
+    throwing_assert(prepared.statement->get_bound_terms() == prepared.bound_names.size());
 }
 
 bool parsed_statement::has_bound_variables() const {

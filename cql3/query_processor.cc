@@ -754,7 +754,6 @@ query_processor::prepare(utils::chunked_string query_string, const service::clie
                                 bound_terms,
                                 std::numeric_limits<uint16_t>::max()));
                 }
-                throwing_assert(bound_terms == prepared->bound_names.size());
                 return make_ready_future<std::unique_ptr<statements::prepared_statement>>(std::move(prepared));
             });
 
