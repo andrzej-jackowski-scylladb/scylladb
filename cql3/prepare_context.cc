@@ -27,10 +27,6 @@ const std::vector<lw_shared_ptr<column_specification>>& prepare_context::get_var
     return _variable_specs;
 }
 
-std::vector<lw_shared_ptr<column_specification>> prepare_context::get_variable_specifications() && {
-    return std::move(_variable_specs);
-}
-
 std::vector<uint16_t> prepare_context::get_partition_key_bind_indexes(const schema& schema) const {
     auto count = schema.partition_key_columns().size();
     std::vector<uint16_t> partition_key_positions(count, uint16_t(0));

@@ -72,8 +72,6 @@ public:
 
     const std::vector<lw_shared_ptr<column_specification>>& get_variable_specifications() const &;
 
-    std::vector<lw_shared_ptr<column_specification>> get_variable_specifications() &&;
-
     std::vector<uint16_t> get_partition_key_bind_indexes(const schema& schema) const;
 
     void add_variable_specification(int32_t bind_index, lw_shared_ptr<column_specification> spec);
