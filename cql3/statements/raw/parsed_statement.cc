@@ -26,16 +26,16 @@ parsed_statement::~parsed_statement()
 { }
 
 std::unique_ptr<prepared_statement> parsed_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
-    return do_prepare(db, _prepare_ctx, stats, cfg);
-}
-
-// Used by the parser and preparable statement
-void parsed_statement::set_bound_variables(const std::vector<::shared_ptr<column_identifier>>& bound_names, dialect d) {
-    _prepare_ctx.set_bound_variables(bound_names, d);
+    prepare_context ctx;
+    // A statement built rather than parsed may have been handed nothing.
+    if (_dialect) {
+        ctx.set_bound_variables(_bound_names, *_dialect);
+    }
+    return do_prepare(db, ctx, stats, cfg);
 }
 
 bool parsed_statement::has_bound_variables() const {
-    return _prepare_ctx.bound_variables_size() != 0;
+    return !_bound_names.empty();
 }
 
 }

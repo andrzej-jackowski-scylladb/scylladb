@@ -68,6 +68,15 @@ public:
 
     prepare_context() = default;
 
+    // A copy would be filled and then dropped, leaving the statement that filled
+    // it with nothing to bind, so there is no way to make one. A move would
+    // empty it just as quietly: a context belongs to the one prepare run that
+    // fills it.
+    prepare_context(const prepare_context&) = delete;
+    prepare_context& operator=(const prepare_context&) = delete;
+    prepare_context(prepare_context&&) = delete;
+    prepare_context& operator=(prepare_context&&) = delete;
+
     size_t bound_variables_size() const;
 
     const std::vector<lw_shared_ptr<column_specification>>& get_variable_specifications() const &;

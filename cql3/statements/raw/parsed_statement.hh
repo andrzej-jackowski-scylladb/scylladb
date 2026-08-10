@@ -16,6 +16,7 @@
 
 #include <seastar/core/shared_ptr.hh>
 
+#include <optional>
 #include <vector>
 #include "audit/audit.hh"
 
@@ -32,13 +33,22 @@ class prepared_statement;
 namespace raw {
 
 class parsed_statement {
-protected:
-    prepare_context _prepare_ctx;
+    // What the parser hands over: the marker names it saw, and the dialect it
+    // read them under. Every prepare run builds a context of its own starting
+    // from these, so a statement stays ordinary to copy, and a copy keeps the
+    // markers it was parsed with.
+    std::vector<::shared_ptr<column_identifier>> _bound_names;
+    std::optional<dialect> _dialect;
 
 public:
     virtual ~parsed_statement();
 
-    void set_bound_variables(const std::vector<::shared_ptr<column_identifier>>& bound_names, dialect d);
+    // Used by the parser and preparable statement. Inline, so that handing over
+    // the usual empty list costs the parser next to nothing.
+    void set_bound_variables(std::vector<::shared_ptr<column_identifier>>&& bound_names, dialect d) {
+        _bound_names = std::move(bound_names);
+        _dialect = d;
+    }
 
     // Whether the parser saw any marker at all, for a caller that has no values
     // to bind them to and has to refuse the statement instead of preparing it.
