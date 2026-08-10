@@ -281,3 +281,14 @@ def test_aggregate_with_udt_keyspace_isolation(cql, test_keyspace):
                 cql.execute(
                     f"CREATE AGGREGATE {other_ks}.suma ({test_keyspace}.{udt_name}) "
                     f"SFUNC plus STYPE int INITCOND 10")
+
+# An INITCOND is a term, so the parser lets a bind marker into it, but the
+# statement never reads one: nothing could bind it, and the CREATE only
+# failed once it executed. It is refused up front instead, like in a
+# CREATE MATERIALIZED VIEW. The SFUNC doesn't need to exist — the marker
+# is refused before function lookup.
+def test_initcond_refuses_bind_marker(scylla_only, cql, test_keyspace):
+    with pytest.raises(InvalidRequest, match="query parameters"):
+        cql.prepare(f"CREATE AGGREGATE {test_keyspace}.aggmarker(int) SFUNC plus STYPE int INITCOND ?")
+    with pytest.raises(InvalidRequest, match="query parameters"):
+        cql.execute(f"CREATE AGGREGATE {test_keyspace}.aggmarker(int) SFUNC plus STYPE int INITCOND [?, 1]")
