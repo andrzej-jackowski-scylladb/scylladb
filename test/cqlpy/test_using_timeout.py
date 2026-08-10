@@ -4,7 +4,7 @@
 
 # Tests for USING TIMEOUT extension
 
-from .util import unique_name, unique_key_int
+from .util import unique_name, unique_key_int, new_materialized_view
 import pytest
 from cassandra.protocol import InvalidRequest, ReadTimeout, WriteTimeout, SyntaxException
 from cassandra.cluster import NoHostAvailable
@@ -65,10 +65,31 @@ def test_prepared_statements(scylla_only, cql, table1):
     prep_named = cql.prepare(f"UPDATE {table} USING TIMEOUT :timeout AND TIMESTAMP :ts SET v = :v WHERE p = {key} and c = 1")
     # Timeout cannot be left unbound
     with pytest.raises(InvalidRequest):
-        cql.execute(prep_named, {'timestamp': 42, 'v': 3})
-    cql.execute(prep_named, {'timestamp': 42, 'v': 3, 'timeout': Duration(nanoseconds=10**15)})
+        cql.execute(prep_named, {'ts': 2, 'v': 3})
+    # The positional write above bound its timestamp marker to 3, so a write
+    # bound to an older timestamp loses to it, while one the server
+    # timestamped for itself would win.
+    cql.execute(prep_named, {'ts': 2, 'v': 3, 'timeout': Duration(nanoseconds=10**15)})
+    result = list(cql.execute(f"SELECT * FROM {table} WHERE p = {key} AND c = 1"))
+    assert len(result) == 1 and (result[0].c, result[0].v) == (1, 42)
+    cql.execute(prep_named, {'ts': 4, 'v': 3, 'timeout': Duration(nanoseconds=10**15)})
     result = list(cql.execute(f"SELECT * FROM {table} WHERE p = {key} AND c = 1"))
     assert len(result) == 1 and (result[0].c, result[0].v) == (1, 3)
+    # A DELETE is given its USING clause ahead of the rest of the statement, so
+    # its markers are numbered first rather than last. Write the row it removes
+    # at a timestamp of its own, so that the one bound here decides the outcome.
+    cql.execute(f"INSERT INTO {table} (p,c,v) VALUES ({key},9,9) USING TIMESTAMP 100")
+    prep = cql.prepare(f"DELETE FROM {table} USING TIMEOUT ? AND TIMESTAMP ? WHERE p = {key} AND c = ?")
+    assert [col.name for col in prep.column_metadata] == ['[timeout]', '[timestamp]', 'c']
+    with pytest.raises(WriteTimeout):
+        cql.execute(prep, (Duration(nanoseconds=0), 200, 9))
+    cql.execute(prep, (Duration(nanoseconds=10**15), 200, 9))
+    assert list(cql.execute(f"SELECT * FROM {table} WHERE p = {key} AND c = 9")) == []
+    # A later write outlives the tombstone left at the bound timestamp, while
+    # one the server timestamped for itself would bury the row for good.
+    cql.execute(f"INSERT INTO {table} (p,c,v) VALUES ({key},9,9) USING TIMESTAMP 250")
+    result = list(cql.execute(f"SELECT * FROM {table} WHERE p = {key} AND c = 9"))
+    assert len(result) == 1 and (result[0].c, result[0].v) == (9, 9)
 
 def test_batch(scylla_only, cql, table1):
     table = table1
@@ -195,3 +216,37 @@ def test_truncate_using_timeout_prepared(scylla_only, cql, table1):
         cql.execute(f"TRUNCATE TABLE {table} USING TIMEOUT ?")
     with pytest.raises(NoHostAvailable):
         cql.execute(prep, (Duration(nanoseconds=0),))
+
+# Nothing bound the markers a PRUNE MATERIALIZED VIEW takes in its USING
+# clause. A statement that loses one looks like a statement with nothing to
+# bind, which is how a TRUNCATE timeout went unbindable without anyone
+# noticing.
+def test_prune_materialized_view_using_timeout_prepared(scylla_only, cql, table1):
+    with new_materialized_view(cql, table1, '*', 'v, p, c',
+            'v is not null and p is not null and c is not null') as mv:
+        prep = cql.prepare(f"PRUNE MATERIALIZED VIEW {mv} USING TIMEOUT ? AND CONCURRENCY ?")
+        assert [col.name for col in prep.column_metadata] == ['[timeout]', '[concurrency]']
+        with pytest.raises(ReadTimeout):
+            cql.execute(prep, (Duration(nanoseconds=0), 2))
+        cql.execute(prep, (Duration(nanoseconds=10**15), 2))
+        prep_named = cql.prepare(f"PRUNE MATERIALIZED VIEW {mv} USING TIMEOUT :timeout AND CONCURRENCY :conc")
+        cql.execute(prep_named, {'timeout': Duration(nanoseconds=10**15), 'conc': 2})
+        # An unprepared statement carries no value the markers could be bound to
+        with pytest.raises(InvalidRequest):
+            cql.execute(f"PRUNE MATERIALIZED VIEW {mv} USING TIMEOUT ? AND CONCURRENCY ?")
+
+# A SELECT and a PRUNE are given their USING clause last, so its markers are
+# numbered after every other one. A statement that accounts for one kind and not
+# the other still hands out the right number of them until both appear at once.
+def test_marker_ahead_of_a_using_clause(scylla_only, cql, table1):
+    table = table1
+    key = unique_key_int()
+    cql.execute(f"INSERT INTO {table} (p,c,v) VALUES ({key},1,1)")
+    prep = cql.prepare(f"SELECT * FROM {table} WHERE p = ? USING TIMEOUT ?")
+    assert [col.name for col in prep.column_metadata] == ['p', '[timeout]']
+    assert len(list(cql.execute(prep, (key, Duration(nanoseconds=10**15))))) == 1
+    with new_materialized_view(cql, table1, '*', 'v, p, c',
+            'v is not null and p is not null and c is not null') as mv:
+        prep = cql.prepare(f"PRUNE MATERIALIZED VIEW {mv} WHERE v = ? USING TIMEOUT ? AND CONCURRENCY ?")
+        assert [col.name for col in prep.column_metadata] == ['v', '[timeout]', '[concurrency]']
+        cql.execute(prep, (1, Duration(nanoseconds=10**15), 2))
