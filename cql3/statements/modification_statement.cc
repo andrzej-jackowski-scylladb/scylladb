@@ -611,7 +611,7 @@ namespace raw {
 std::unique_ptr<prepared_statement>
 modification_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
     schema_ptr schema = validation::validate_column_family(db, keyspace(), column_family());
-    auto meta = get_prepare_context();
+    auto& meta = get_prepare_context();
 
     auto statement = std::invoke([&] -> shared_ptr<cql_statement> {
         auto result = prepare(db, meta, stats);
