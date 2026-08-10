@@ -103,6 +103,8 @@ private:
     // captured in prepare_keyspace().
     bool _no_from = false;
     sstring _session_keyspace;
+    // Relaxes the validation a view definition is allowed to rely on.
+    bool _for_view = false;
 public:
     select_statement(std::optional<cf_name> cf_name,
             lw_shared_ptr<const parameters> parameters,
@@ -116,13 +118,12 @@ public:
     virtual void prepare_keyspace(const service::client_state& state) override;
     using cf_statement::prepare_keyspace;
 
-    // A view's SELECT is built rather than parsed, so it reaches the prepare step
-    // through here instead of through the parser's entry point.
-    std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg, bool for_view);
-    using parsed_statement::prepare;
+    // A view's SELECT is built rather than parsed, so the parser cannot mark
+    // it as one; whoever builds it marks it here before preparing it.
+    void mark_for_view() { _for_view = true; }
 private:
     virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override {
-        return do_prepare(db, ctx, stats, cfg, false);
+        return do_prepare(db, ctx, stats, cfg, _for_view);
     }
     std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg, bool for_view);
 

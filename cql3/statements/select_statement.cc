@@ -2076,10 +2076,6 @@ group_by_references_clustering_keys(const selection::selection& sel, const std::
     });
 }
 
-std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg, bool for_view) {
-    return do_prepare(db, _prepare_ctx, stats, cfg, for_view);
-}
-
 std::unique_ptr<prepared_statement> select_statement::do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg, bool for_view) {
     if (_no_from && _select_clause.empty()) {
         // No table to expand the wildcard against.

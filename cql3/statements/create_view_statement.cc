@@ -210,8 +210,9 @@ std::pair<view_ptr, cql3::cql_warnings_vec> create_view_statement::prepare_view(
     // connection that happens to create the view would validate something else.
     raw_select.set_bound_variables({}, internal_dialect());
 
+    raw_select.mark_for_view();
     cql_stats ignored;
-    auto prepared = raw_select.prepare(db, ignored, default_cql_config, true);
+    auto prepared = raw_select.prepare(db, ignored, default_cql_config);
     auto restrictions = static_pointer_cast<statements::select_statement>(prepared->statement)->get_restrictions();
 
     auto base_primary_key_cols =
