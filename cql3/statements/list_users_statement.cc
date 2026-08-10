@@ -23,8 +23,8 @@ shared_ptr<const cql3::metadata> cql3::statements::list_users_statement::get_res
                 cql3::make_column_spec(db::system_keyspace::NAME, "users", "super", boolean_type)});
 }
 
-std::unique_ptr<cql3::statements::prepared_statement> cql3::statements::list_users_statement::prepare(
-                data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
+std::unique_ptr<cql3::statements::prepared_statement> cql3::statements::list_users_statement::do_prepare(
+                data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) {
     return std::make_unique<prepared_statement>(audit_info(), ::make_shared<list_users_statement>(*this));
 }
 

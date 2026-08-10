@@ -456,9 +456,7 @@ void batch_statement::build_cas_result_set_metadata() {
 namespace raw {
 
 std::unique_ptr<prepared_statement>
-batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
-    auto&& meta = get_prepare_context();
-
+batch_statement::do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) {
     std::optional<sstring> first_ks;
     std::optional<sstring> first_cf;
     bool have_multiple_cfs = false;
@@ -474,7 +472,7 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
             have_multiple_cfs |= first_ks.value() != parsed->keyspace();
             have_multiple_cfs |= first_cf.value() != parsed->column_family();
         }
-        statements.emplace_back(parsed->prepare(db, meta, stats));
+        statements.emplace_back(parsed->prepare(db, ctx, stats));
         auto audit_info = statements.back().statement->get_audit_info();
         if (audit_info) {
             audit_info->set_query_string(parsed->get_raw_cql());
@@ -482,16 +480,16 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
     }
 
     auto&& prep_attrs = _attrs->prepare(db, "[batch]", "[batch]");
-    prep_attrs->fill_prepare_context(meta);
+    prep_attrs->fill_prepare_context(ctx);
 
-    cql3::statements::batch_statement batch_statement_(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);
+    cql3::statements::batch_statement batch_statement_(ctx.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);
 
     std::vector<uint16_t> partition_key_bind_indices;
     if (!have_multiple_cfs && batch_statement_.get_statements().size() > 0) {
-        partition_key_bind_indices = meta.get_partition_key_bind_indexes(*batch_statement_.get_statements()[0].statement->s);
+        partition_key_bind_indices = ctx.get_partition_key_bind_indexes(*batch_statement_.get_statements()[0].statement->s);
     }
     return std::make_unique<prepared_statement>(audit_info(), make_shared<cql3::statements::batch_statement>(std::move(batch_statement_)),
-                                                     meta.get_variable_specifications(),
+                                                     ctx.get_variable_specifications(),
                                                      std::move(partition_key_bind_indices));
 }
 

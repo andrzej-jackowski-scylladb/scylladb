@@ -37,8 +37,8 @@ list_service_level_statement::list_service_level_statement(sstring service_level
 }
 
 std::unique_ptr<cql3::statements::prepared_statement>
-cql3::statements::list_service_level_statement::prepare(
-        data_dictionary::database db, cql_stats &stats, const cql_config& cfg) {
+cql3::statements::list_service_level_statement::do_prepare(
+        data_dictionary::database db, prepare_context& ctx, cql_stats &stats, const cql_config& cfg) {
     return std::make_unique<prepared_statement>(audit_info(), ::make_shared<list_service_level_statement>(*this));
 }
 

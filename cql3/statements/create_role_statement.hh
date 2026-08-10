@@ -37,8 +37,6 @@ public:
                 , _if_not_exists(if_not_exists) {
     }
 
-    std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-
     virtual future<> check_access(query_processor& qp, const service::client_state&) const override;
 
     virtual future<::shared_ptr<cql_transport::messages::result_message>>
@@ -48,6 +46,7 @@ public:
 
 private:
     future<> grant_permissions_to_creator(const service::client_state&, ::service::group0_batch&) const;
+    std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 }

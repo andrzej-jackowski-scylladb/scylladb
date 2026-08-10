@@ -609,12 +609,11 @@ modification_statement::process_where_clause(data_dictionary::database db, expr:
 namespace raw {
 
 std::unique_ptr<prepared_statement>
-modification_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
+modification_statement::do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) {
     schema_ptr schema = validation::validate_column_family(db, keyspace(), column_family());
-    auto& meta = get_prepare_context();
 
     auto statement = std::invoke([&] -> shared_ptr<cql_statement> {
-        auto result = prepare(db, meta, stats);
+        auto result = prepare(db, ctx, stats);
 
         if (strong_consistency::is_strongly_consistent(db, schema->ks_name())) {
             return ::make_shared<strong_consistency::modification_statement>(std::move(result));
@@ -623,8 +622,8 @@ modification_statement::prepare(data_dictionary::database db, cql_stats& stats, 
         return result;
     });
 
-    auto partition_key_bind_indices = meta.get_partition_key_bind_indexes(*schema);
-    return std::make_unique<prepared_statement>(audit_info(), std::move(statement), meta, 
+    auto partition_key_bind_indices = ctx.get_partition_key_bind_indexes(*schema);
+    return std::make_unique<prepared_statement>(audit_info(), std::move(statement), ctx,
         std::move(partition_key_bind_indices));
 }
 

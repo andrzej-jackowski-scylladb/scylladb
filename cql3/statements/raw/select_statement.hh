@@ -116,11 +116,16 @@ public:
     virtual void prepare_keyspace(const service::client_state& state) override;
     using cf_statement::prepare_keyspace;
 
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override {
-        return prepare(db, stats, cfg, false);
-    }
+    // A view's SELECT is built rather than parsed, so it reaches the prepare step
+    // through here instead of through the parser's entry point.
     std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg, bool for_view);
+    using parsed_statement::prepare;
 private:
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override {
+        return do_prepare(db, ctx, stats, cfg, false);
+    }
+    std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg, bool for_view);
+
     std::vector<selection::prepared_selector> maybe_jsonize_select_clause(std::vector<selection::prepared_selector> select, data_dictionary::database db, schema_ptr schema);
     ::shared_ptr<const restrictions::statement_restrictions> prepare_restrictions(
         data_dictionary::database db,

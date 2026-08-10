@@ -76,8 +76,6 @@ public:
 
     future<std::tuple<::shared_ptr<cql_transport::event::schema_change>, utils::chunked_vector<mutation>, cql3::cql_warnings_vec>> prepare_schema_mutations(query_processor& qp, const query_options& options, api::timestamp_type) const override;
 
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-
     future<::shared_ptr<messages::result_message>> execute(query_processor& qp, service::query_state& state, const query_options& options, std::optional<service::group0_guard> guard) const override;
 
     virtual future<> grant_permissions_to_creator(const service::client_state&, service::group0_batch&) const override;
@@ -95,6 +93,7 @@ private:
     void add_column_metadata_from_aliases(schema_builder& builder, std::vector<bytes> aliases, const std::vector<data_type>& types, column_kind kind) const;
 
     ::shared_ptr<event_t> created_event() const;
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 class create_table_statement::raw_statement : public raw::cf_statement {
@@ -116,8 +115,6 @@ private:
 public:
     raw_statement(cf_name name, bool if_not_exists);
 
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-
     cf_properties& properties() {
         return _properties;
     }
@@ -131,6 +128,7 @@ public:
     void add_column_alias(::shared_ptr<column_identifier> alias);
 protected:
     virtual audit::statement_category category() const override;
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 std::optional<sstring> check_restricted_table_properties(

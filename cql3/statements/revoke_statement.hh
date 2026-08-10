@@ -22,12 +22,12 @@ class revoke_statement : public permission_altering_statement {
 public:
     using permission_altering_statement::permission_altering_statement;
 
-    std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-
     future<::shared_ptr<cql_transport::messages::result_message>> execute(query_processor&
                     , service::query_state&
                     , const query_options&
                     , std::optional<service::group0_guard> guard) const override;
+private:
+    std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 }

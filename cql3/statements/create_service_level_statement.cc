@@ -27,8 +27,8 @@ create_service_level_statement::create_service_level_statement(sstring service_l
 }
 
 std::unique_ptr<cql3::statements::prepared_statement>
-cql3::statements::create_service_level_statement::prepare(
-        data_dictionary::database db, cql_stats &stats, const cql_config& cfg) {
+cql3::statements::create_service_level_statement::do_prepare(
+        data_dictionary::database db, prepare_context& ctx, cql_stats &stats, const cql_config& cfg) {
     return std::make_unique<prepared_statement>(audit_info(), ::make_shared<create_service_level_statement>(*this));
 }
 

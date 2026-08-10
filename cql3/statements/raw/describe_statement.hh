@@ -81,8 +81,6 @@ public:
     explicit describe_statement(describe_config config);
     void with_internals_details(bool with_hashed_passwords);
 
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-
     static std::unique_ptr<describe_statement> cluster();
     static std::unique_ptr<describe_statement> schema(bool full);
     static std::unique_ptr<describe_statement> keyspaces();
@@ -98,6 +96,8 @@ public:
     static std::unique_ptr<describe_statement> aggregates();
     static std::unique_ptr<describe_statement> aggregate(const functions::function_name& fn_name);
     static std::unique_ptr<describe_statement> generic(std::optional<sstring> keyspace, const sstring& name);
+private:
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 }

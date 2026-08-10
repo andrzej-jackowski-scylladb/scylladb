@@ -35,10 +35,9 @@ truncate_statement::truncate_statement(cf_name name, std::unique_ptr<attributes:
     throwing_assert(!_attrs->time_to_live.has_value());
 }
 
-std::unique_ptr<prepared_statement> truncate_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
+std::unique_ptr<prepared_statement> truncate_statement::do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) {
     schema_ptr schema = validation::validate_column_family(db, keyspace(), column_family());
     auto prepared_attributes = _attrs->prepare(db, keyspace(), column_family());
-    prepare_context& ctx = get_prepare_context();
     prepared_attributes->fill_prepare_context(ctx);
     auto stmt = ::make_shared<cql3::statements::truncate_statement>(std::move(schema), std::move(prepared_attributes), ctx.bound_variables_size());
     // TRUNCATE has no restrictions, so no bind marker can stand for a partition key component.

@@ -46,13 +46,14 @@ public:
         }
     }
 
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 protected:
     virtual audit::statement_category category() const override;
     virtual audit::audit_info_ptr audit_info() const override {
         constexpr bool batch = true;
         return audit::audit::create_audit_info(category(), sstring(), sstring(), batch);
     }
+private:
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 }

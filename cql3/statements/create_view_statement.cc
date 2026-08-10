@@ -425,8 +425,8 @@ create_view_statement::prepare_schema_mutations(query_processor& qp, const query
 }
 
 std::unique_ptr<cql3::statements::prepared_statement>
-create_view_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
-    if (!_prepare_ctx.get_variable_specifications().empty()) {
+create_view_statement::do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) {
+    if (!ctx.get_variable_specifications().empty()) {
         throw exceptions::invalid_request_exception(format("Cannot use query parameters in CREATE MATERIALIZED VIEW statements"));
     }
     return std::make_unique<prepared_statement>(audit_info(), make_shared<create_view_statement>(*this));

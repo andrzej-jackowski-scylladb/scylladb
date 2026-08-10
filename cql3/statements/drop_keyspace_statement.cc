@@ -73,7 +73,7 @@ future<std::tuple<::shared_ptr<cql_transport::event::schema_change>, cql3::cql_w
 }
 
 std::unique_ptr<cql3::statements::prepared_statement>
-drop_keyspace_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
+drop_keyspace_statement::do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) {
     return std::make_unique<prepared_statement>(audit_info(), make_shared<drop_keyspace_statement>(*this));
 }
 

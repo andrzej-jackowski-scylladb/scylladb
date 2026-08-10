@@ -38,14 +38,20 @@ protected:
 public:
     virtual ~parsed_statement();
 
-    prepare_context& get_prepare_context();
-    const prepare_context& get_prepare_context() const;
-
     void set_bound_variables(const std::vector<::shared_ptr<column_identifier>>& bound_names, dialect d);
 
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) = 0;
+    // Whether the parser saw any marker at all, for a caller that has no values
+    // to bind them to and has to refuse the statement instead of preparing it.
+    bool has_bound_variables() const;
+
+    std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg);
 
 protected:
+    // A statement is handed the context it is meant to fill instead of reaching
+    // for one, so that the bind variables it prepares cannot end up somewhere
+    // nobody reads them.
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) = 0;
+
     virtual audit::statement_category category() const = 0;
     virtual audit::audit_info_ptr audit_info() const = 0;
 };

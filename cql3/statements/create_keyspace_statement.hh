@@ -72,8 +72,6 @@ public:
 
     future<std::tuple<::shared_ptr<cql_transport::event::schema_change>, utils::chunked_vector<mutation>, cql3::cql_warnings_vec>> prepare_schema_mutations(query_processor& qp, const query_options& options, api::timestamp_type) const override;
 
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-
     virtual future<> grant_permissions_to_creator(const service::client_state&, service::group0_batch&) const override;
 
     virtual future<::shared_ptr<messages::result_message>>
@@ -83,6 +81,7 @@ public:
 
 private:
     ::shared_ptr<event_t> created_event() const;
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 std::vector<sstring> check_against_restricted_replication_strategies(

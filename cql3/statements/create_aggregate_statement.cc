@@ -78,8 +78,8 @@ seastar::future<shared_ptr<db::functions::function>> create_aggregate_statement:
     co_return ::make_shared<functions::user_aggregate>(_name, initcond, std::move(state_func), std::move(reduce_func), std::move(final_func));
 }
 
-std::unique_ptr<prepared_statement> create_aggregate_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
-    if (!_prepare_ctx.get_variable_specifications().empty()) {
+std::unique_ptr<prepared_statement> create_aggregate_statement::do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) {
+    if (!ctx.get_variable_specifications().empty()) {
         throw exceptions::invalid_request_exception("Cannot use query parameters in CREATE AGGREGATE statements");
     }
     return std::make_unique<prepared_statement>(audit_info(), make_shared<create_aggregate_statement>(*this));

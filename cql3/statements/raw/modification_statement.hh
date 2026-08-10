@@ -39,8 +39,10 @@ protected:
     modification_statement(cf_name name, std::unique_ptr<attributes::raw> attrs, std::optional<expr::expression> conditions = {}, bool if_not_exists = false, bool if_exists = false);
 
 public:
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
+    // A batch prepares each of its statements into the context it keeps for all
+    // of them, so this is reachable from outside the prepare step.
     ::shared_ptr<cql3::statements::modification_statement> prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats) const;
+    using parsed_statement::prepare;
     void add_raw(sstring&& raw) { _raw_cql = std::move(raw); }
     const sstring& get_raw_cql() const { return _raw_cql; }
 protected:
@@ -54,6 +56,7 @@ protected:
             cql3::statements::modification_statement& stmt) const;
 
     virtual audit::statement_category category() const override;
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 }

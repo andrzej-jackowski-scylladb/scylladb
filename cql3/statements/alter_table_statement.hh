@@ -64,7 +64,6 @@ public:
 
     virtual uint32_t get_bound_terms() const override;
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
     virtual future<::shared_ptr<messages::result_message>> execute(query_processor& qp, service::query_state& state, const query_options& options, std::optional<service::group0_guard> guard) const override;
 
     future<std::tuple<::shared_ptr<cql_transport::event::schema_change>, utils::chunked_vector<mutation>, cql3::cql_warnings_vec>> prepare_schema_mutations(query_processor& qp, const query_options& options, api::timestamp_type) const override;
@@ -73,6 +72,7 @@ private:
     void alter_column(const query_options& options, const schema& schema, data_dictionary::table cf, schema_builder& cfm, std::vector<view_ptr>& view_updates, const column_identifier& column_name, const cql3_type validator, const column_definition* def, bool is_static) const;
     void drop_column(const query_options& options, const schema& schema, data_dictionary::table cf, schema_builder& cfm, std::vector<view_ptr>& view_updates, const column_identifier& column_name, const cql3_type validator, const column_definition* def, bool is_static) const;
     std::pair<schema_ptr, std::vector<view_ptr>> prepare_schema_update(data_dictionary::database db, const query_options& options) const;
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 class alter_table_statement::raw_statement : public raw::cf_statement {
@@ -92,9 +92,9 @@ public:
                   std::unique_ptr<attributes::raw> attrs,
                   shared_ptr<column_identifier::raw> ttl_change);
     
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-
     virtual audit::statement_category category() const override { return audit::statement_category::DDL; }
+private:
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 }

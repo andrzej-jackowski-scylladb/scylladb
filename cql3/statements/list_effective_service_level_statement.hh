@@ -19,12 +19,12 @@ class list_effective_service_level_statement final : public service_level_statem
 public:
     list_effective_service_level_statement(sstring role_name);
 
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-
     virtual seastar::shared_ptr<const metadata> get_result_metadata() const override;
 
     virtual future<::shared_ptr<cql_transport::messages::result_message>>
     execute(query_processor&, service::query_state&, const query_options&, std::optional<service::group0_guard>) const override;
+private:
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 }

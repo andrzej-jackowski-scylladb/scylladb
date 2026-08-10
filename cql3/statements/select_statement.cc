@@ -2077,6 +2077,10 @@ group_by_references_clustering_keys(const selection::selection& sel, const std::
 }
 
 std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg, bool for_view) {
+    return do_prepare(db, _prepare_ctx, stats, cfg, for_view);
+}
+
+std::unique_ptr<prepared_statement> select_statement::do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg, bool for_view) {
     if (_no_from && _select_clause.empty()) {
         // No table to expand the wildcard against.
         // Rejecting before maybe_jsonize_select_clause() guards against SELECT JSON *.
@@ -2084,7 +2088,6 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
     }
     schema_ptr underlying_schema = validation::validate_column_family(db, keyspace(), column_family());
     schema_ptr schema = _parameters->is_mutation_fragments() ? mutation_fragments_select_statement::generate_output_schema(underlying_schema) : underlying_schema;
-    prepare_context& ctx = get_prepare_context();
 
     auto prepared_selectors = selection::raw_selector::to_prepared_selectors(_select_clause, *schema, db, _no_from ? _session_keyspace : keyspace());
 

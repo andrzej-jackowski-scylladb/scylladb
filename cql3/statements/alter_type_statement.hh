@@ -54,10 +54,10 @@ public:
                  const shared_ptr<column_identifier> field_name,
                  const shared_ptr<cql3_type::raw> field_type);
     virtual user_type make_updated_type(data_dictionary::database db, user_type to_update) const override;
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 private:
     user_type do_add(data_dictionary::database db, user_type to_update) const;
     user_type do_alter(data_dictionary::database db, user_type to_update) const;
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 
@@ -71,7 +71,8 @@ public:
     void add_rename(shared_ptr<column_identifier> previous_name, shared_ptr<column_identifier> new_name);
 
     virtual user_type make_updated_type(data_dictionary::database db, user_type to_update) const override;
-    virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
+private:
+    virtual std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 }

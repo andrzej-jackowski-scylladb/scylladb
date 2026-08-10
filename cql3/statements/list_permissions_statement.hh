@@ -32,8 +32,6 @@ private:
 public:
     list_permissions_statement(auth::permission_set, std::optional<auth::resource>, std::optional<sstring>, bool);
 
-    std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-
     virtual seastar::shared_ptr<const metadata> get_result_metadata() const override;
 
     void validate(query_processor&, const service::client_state&) const override;
@@ -42,6 +40,8 @@ public:
 
     future<::shared_ptr<cql_transport::messages::result_message>>
     execute(query_processor&, service::query_state& , const query_options&, std::optional<service::group0_guard> guard) const override;
+private:
+    std::unique_ptr<prepared_statement> do_prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats, const cql_config& cfg) override;
 };
 
 }
