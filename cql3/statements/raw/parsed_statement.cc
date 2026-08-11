@@ -29,11 +29,8 @@ parsed_statement::~parsed_statement()
 { }
 
 std::unique_ptr<prepared_statement> parsed_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
-    prepare_context ctx;
     // A statement built rather than parsed may have been handed nothing.
-    if (_dialect) {
-        ctx.set_bound_variables(_bound_names, *_dialect);
-    }
+    prepare_context ctx(_bound_names, _dialect);
     auto prepared = do_prepare(db, ctx, stats, cfg);
     // A statement given no markers has none to drop, and an unprepared
     // statement pays for its prepare on every run.

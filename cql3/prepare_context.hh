@@ -17,6 +17,7 @@
 #include <vector>
 #include <stddef.h>
 #include "cql3/expr/expression.hh"
+#include "cql3/column_specification.hh"
 #include "cql3/dialect.hh"
 
 class schema;
@@ -66,7 +67,17 @@ private:
 
 public:
 
-    prepare_context() = default;
+    // What the parser knows is what a context is made of, so it is handed over
+    // at construction: the marker names it saw and the dialect it read them
+    // under. Nothing has to be emptied before a context is filled, because
+    // there is no moment where one exists unfilled. The dialect is optional
+    // only because a statement built rather than parsed was never told one.
+    prepare_context(const std::vector<shared_ptr<column_identifier>>& bind_variable_names, std::optional<dialect> d)
+        : _variable_names(bind_variable_names)
+        , _variable_specs(bind_variable_names.size())
+        , _targets(bind_variable_names.size())
+        , _dialect(d)
+    { }
 
     // A copy would be filled and then dropped, leaving the statement that filled
     // it with nothing to bind, so there is no way to make one. A move would
@@ -84,11 +95,6 @@ public:
     std::vector<uint16_t> get_partition_key_bind_indexes(const schema& schema) const;
 
     void add_variable_specification(int32_t bind_index, lw_shared_ptr<column_specification> spec);
-
-    // Hands over what the parser knows and the prepare step needs. The dialect is
-    // part of it, so that a statement built rather than parsed cannot reach the
-    // prepare step without having said which dialect it is prepared under.
-    void set_bound_variables(const std::vector<shared_ptr<column_identifier>>& bind_variable_names, dialect d);
 
     const dialect& get_dialect() const;
 

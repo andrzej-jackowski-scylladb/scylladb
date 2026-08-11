@@ -34,8 +34,7 @@ namespace {
 query::clustering_row_ranges slice(
         const std::vector<expr::expression>& where_clause, cql_test_env& env,
         const sstring& table_name = "t", const sstring& keyspace_name = "ks") {
-    prepare_context ctx;
-    ctx.set_bound_variables({}, internal_dialect());
+    prepare_context ctx({}, internal_dialect());
     return restrictions::analyze_statement_restrictions(
             env.data_dictionary(),
             env.local_db().find_schema(keyspace_name, table_name),
@@ -401,8 +400,7 @@ SEASTAR_TEST_CASE(index_selection) {
         // Build statement_restrictions from a WHERE clause string and return the
         // index-selection result.
         auto check = [&](std::string_view where_clause) -> expected {
-            prepare_context ctx;
-            ctx.set_bound_variables({}, internal_dialect());
+            prepare_context ctx({}, internal_dialect());
             auto factors = where_clause.empty()
                 ? std::vector<expr::expression>{}
                 : boolean_factors(cql3::util::where_clause_to_relations(where_clause, cql3::dialect{}));
@@ -651,8 +649,7 @@ SEASTAR_TEST_CASE(combinatorial_restrictions) {
                                    mask, where_clause, api);
             };
 
-            prepare_context ctx;
-            ctx.set_bound_variables({}, internal_dialect());
+            prepare_context ctx({}, internal_dialect());
             auto where_expr = where_clause.empty()
                 ? expr::expression(expr::conjunction{})
                 : cql3::util::where_clause_to_relations(where_clause, cql3::dialect{});
@@ -1157,8 +1154,7 @@ SEASTAR_TEST_CASE(combinatorial_restrictions) {
 static shared_ptr<const restrictions::statement_restrictions> make_restrictions(
         std::string_view where_clause, cql_test_env& env,
         const sstring& table_name = "t", const sstring& keyspace_name = "ks") {
-    prepare_context ctx;
-    ctx.set_bound_variables({}, internal_dialect());
+    prepare_context ctx({}, internal_dialect());
     auto factors = where_clause.empty()
             ? std::vector<expr::expression>{}
             : boolean_factors(cql3::util::where_clause_to_relations(where_clause, cql3::dialect{}));

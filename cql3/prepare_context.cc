@@ -65,17 +65,6 @@ void prepare_context::add_variable_specification(int32_t bind_index, lw_shared_p
     _variable_specs[bind_index] = spec;
 }
 
-void prepare_context::set_bound_variables(const std::vector<shared_ptr<column_identifier>>& bind_variable_names, dialect d) {
-    _variable_names = bind_variable_names;
-    _variable_specs.clear();
-    _targets.clear();
-    _dialect = d;
-
-    const size_t bn_size = bind_variable_names.size();
-    _variable_specs.resize(bn_size);
-    _targets.resize(bn_size);
-}
-
 const dialect& prepare_context::get_dialect() const {
     if (!_dialect) {
         on_internal_error(prepare_context_logger, "the dialect of the prepared statement was never set");
