@@ -34,7 +34,6 @@
 #include "service/topology_mutation.hh"
 #include "utils/assert.hh"
 #include "utils/error_injection.hh"
-#include "utils/per_task_value.hh"
 
 #include <seastar/core/smp.hh>
 #include <seastar/core/sleep.hh>
@@ -973,7 +972,7 @@ void raft_group0::register_server_metrics(raft::server_id my_id, const raft::ser
     // so that the existing dashboards keep working.
     register_raft_server_stats_metrics(_server_metrics, stats, raft_metrics_options{.group_name = "raft", .labels = {id}});
     // One sweep feeds every gauge of a scrape.
-    auto sample = make_lw_shared(utils::per_task_value([&server] { return server.get_status(); }));
+    auto sample = make_lw_shared(sm::per_collection_value([&server] { return server.get_status(); }));
     _server_metrics.add_group("raft", {
         sm::make_gauge("in_memory_log_size", [sample] { return sample->get().in_memory_log_size; },
              sm::description("size of in-memory part of the log"), {id}),

@@ -8,15 +8,14 @@
 
 #pragma once
 
-#include <functional>
 #include <unordered_set>
+#include <seastar/core/metrics.hh>
 #include <seastar/core/metrics_registration.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/weak_ptr.hh>
 #include "raft/server.hh"
 #include "service/raft/raft_rpc.hh"
 #include "seastarx.hh"
-#include "utils/per_task_value.hh"
 
 namespace service { struct raft_metrics_options; }
 
@@ -41,7 +40,7 @@ class table_metrics : public seastar::weakly_referencable<table_metrics> {
         raft::blocked_followers blocked;
     };
     sample sweep() const;
-    utils::per_task_value<std::function<sample()>> _sample{[this] { return sweep(); }};
+    seastar::metrics::per_collection_value<sample> _sample{[this] { return sweep(); }};
 
     // Destroyed first, so that no gauge is evaluated once _servers is gone.
     seastar::metrics::metric_groups _metrics;
