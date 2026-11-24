@@ -15,11 +15,13 @@ import logging
 import os.path
 from pathlib import Path
 import re
+import select
 import socket
 import socketserver
 import tempfile
 import threading
 import time
+import types
 import uuid
 from collections import namedtuple
 from contextlib import contextmanager
@@ -462,12 +464,16 @@ syslog_listeners: dict[str, UnixSockerListener] = {}
 
 @pytest.fixture(scope="module", autouse=True)
 def stop_syslog_listeners():
+    global tcp_syslog_listener
     yield
     for socket_path, listener in syslog_listeners.items():
         listener.shutdown()
         if os.path.exists(socket_path):
             os.remove(socket_path)
     syslog_listeners.clear()
+    if tcp_syslog_listener:
+        tcp_syslog_listener.shutdown()
+        tcp_syslog_listener = None
 
 
 class AuditBackendSyslog(AuditBackend):
@@ -503,6 +509,8 @@ class AuditBackendSyslog(AuditBackend):
         if "audit" in new_audit_settings and new_audit_settings["audit"] == "table":
             new_audit_settings["audit"] = self.audit_mode()
         new_audit_settings["audit_unix_socket_path"] = self.socket_path
+        # a server reused from a test of the TCP backend still has its address
+        new_audit_settings["audit_syslog_address"] = ""
         for key in modifiers:
             new_audit_settings[key] = modifiers[key]
         return new_audit_settings
@@ -543,6 +551,152 @@ class AuditBackendSyslog(AuditBackend):
         event_time = uuid.UUID(int=idx)
         t = self.named_tuple_factory(date, node, event_time, match.group("category"), match.group("cl"), match.group("error") == "true", match.group("keyspace"), statement, source, match.group("table"), match.group("username"))
         return t
+
+
+class TcpSyslogListener:
+    """A syslog server on 127.0.0.1 that collects the lines of every connection."""
+
+    def __init__(self, bound: socket.socket | None = None):
+        """Listen on a new port, or on the port that `bound` holds."""
+        if bound:
+            bound.listen()
+            self.listener = bound
+        else:
+            self.listener = socket.create_server(("127.0.0.1", 0))
+        self.listener.setblocking(False)
+        self.address = f"tcp://127.0.0.1:{self.listener.getsockname()[1]}"
+        self.lock = threading.Lock()
+        self.lines: list[str] = []
+        self.unterminated: dict[socket.socket, bytes] = {}
+        self.stopping = threading.Event()
+        self.thread = threading.Thread(target=self._serve)
+        self.thread.start()
+
+    def _poll(self) -> None:
+        """Accept new connections and read everything the connections have sent. The caller holds the lock."""
+        while True:
+            try:
+                connection, _ = self.listener.accept()
+            except BlockingIOError:
+                break
+            connection.setblocking(False)
+            self.unterminated[connection] = b""
+        for connection in list(self.unterminated):
+            while True:
+                try:
+                    data = connection.recv(1 << 16)
+                except BlockingIOError:
+                    break
+                except ConnectionError:
+                    data = b""
+                if not data:
+                    del self.unterminated[connection]
+                    connection.close()
+                    break
+                *lines, self.unterminated[connection] = (self.unterminated[connection] + data).split(b"\n")
+                self.lines.extend(line.decode() for line in lines)
+
+    def _serve(self) -> None:
+        while not self.stopping.is_set():
+            poller = select.poll()
+            with self.lock:
+                for sock in [self.listener, *self.unterminated]:
+                    poller.register(sock, select.POLLIN)
+            # a socket that get_lines() closes meanwhile only ends this wait early
+            poller.poll(100)
+            with self.lock:
+                self._poll()
+
+    def _drain(self) -> None:
+        """Read until no connection holds part of a line, for at most 10 seconds. The caller holds the lock."""
+        deadline = time.monotonic() + 10
+        self._poll()
+        while any(self.unterminated.values()) and time.monotonic() < deadline:
+            time.sleep(0.01)
+            self._poll()
+
+    def get_lines(self) -> list[str]:
+        """Return the lines received so far.
+
+        A node's audit write ends once the kernel has the record, and on the loopback
+        interface the record is then already waiting here, so it is read too.
+        """
+        with self.lock:
+            self._drain()
+            return list(self.lines)
+
+    def clear(self) -> None:
+        with self.lock:
+            self._drain()
+            self.lines.clear()
+
+    def shutdown(self) -> None:
+        self.stopping.set()
+        self.thread.join()
+        for connection in self.unterminated:
+            connection.close()
+        self.listener.close()
+
+
+# One server for the whole module, so that the address in the config stays the same and servers are reused.
+tcp_syslog_listener: TcpSyslogListener | None = None
+
+tcp_syslog_audit_field_value = r'(?:[^"\\]|\\.)*'
+tcp_syslog_audit_record = re.compile(r"<13>\w{3} [ \d]\d \d\d:\d\d:\d\d \S+ scylla-audit: " + ", ".join(
+    f'{field}="(?P<{field}>{tcp_syslog_audit_field_value})"'
+    for field in ["node", "category", "cl", "error", "keyspace", "query", "client_ip", "table", "username"]))
+
+
+class AuditBackendSyslogTcp(AuditBackend):
+    """The syslog backend sending its records over TCP."""
+    audit_default_settings = {"audit": "syslog", "audit_categories": "ADMIN,AUTH,QUERY,DML,DDL,DCL", "audit_keyspaces": "ks"}
+
+    def __init__(self, socket_path: str | None = None):
+        global tcp_syslog_listener
+        super().__init__(socket_path=socket_path)
+        if tcp_syslog_listener is None:
+            tcp_syslog_listener = TcpSyslogListener()
+        self.listener = tcp_syslog_listener
+        self.named_tuple_factory = namedtuple("Row", ["date", "node", "event_time", "category", "consistency", "error", "keyspace_name", "operation", "source", "table_name", "username"])
+
+    @override
+    def audit_mode(self) -> str:
+        return "syslog"
+
+    @override
+    def clear_audit_logs(self, session: Session | None = None) -> None:
+        self.listener.clear()
+
+    def update_audit_settings(self, audit_settings, modifiers=None):
+        new_audit_settings = copy.deepcopy(audit_settings or self.audit_default_settings)
+        # the shared tests use "table" for any enabled sink
+        if new_audit_settings.get("audit") == "table":
+            new_audit_settings["audit"] = self.audit_mode()
+        new_audit_settings["audit_syslog_address"] = self.listener.address
+        new_audit_settings.update(modifiers or {})
+        return new_audit_settings
+
+    @override
+    def get_audit_log_dict(self, session, consistency_level):
+        return {self.audit_mode(): [self._row(line, idx) for idx, line in enumerate(self.listener.get_lines())]}
+
+    @staticmethod
+    def _unescape(value: str) -> str:
+        def unescaped(escape: re.Match) -> str:
+            if escape[1][0] in "xu":
+                return chr(int(escape[1][1:], 16))
+            return {"n": "\n", "r": "\r", "t": "\t"}.get(escape[1], escape[1])
+        return re.sub(r"\\(x[0-9a-f]{2}|u[0-9a-f]{4}|.)", unescaped, value)
+
+    def _row(self, line: str, idx: int):
+        record = tcp_syslog_audit_record.fullmatch(line)
+        assert record
+        fields = {name: self._unescape(value) for name, value in record.groupdict().items()}
+        # Arbitrary date because we don't really check the field.
+        return self.named_tuple_factory(
+            datetime.datetime(2000, 1, 1, 0, 0), AuditBackendSyslog._parse_address(fields["node"]), uuid.UUID(int=idx),
+            fields["category"], fields["cl"], fields["error"] == "true", fields["keyspace"], fields["query"],
+            AuditBackendSyslog._parse_address(fields["client_ip"]), fields["table"], fields["username"])
 
 
 class AuditBackendComposite(AuditBackend):
@@ -2679,6 +2833,7 @@ async def test_audit_maintenance_socket_user_creation(manager: ScyllaClusterMana
     await t._test_audit_maintenance_socket_user_creation(manager, AuditBackendTable)
     Syslog = functools.partial(AuditBackendSyslog, socket_path=syslog_socket_path)
     await t._test_audit_maintenance_socket_user_creation(manager, Syslog)
+    await t._test_audit_maintenance_socket_user_creation(manager, AuditBackendSyslogTcp)
 
 
 # AuditBackendSyslog, no auth, rf=1
@@ -2745,6 +2900,90 @@ async def test_audit_composite_auth(manager: ScyllaClusterManager, rules_mode: b
     await t._test_permissions(Composite)
 
 
+# AuditBackendSyslogTcp, no auth, rf=1
+
+@verify_legacy_and_rules
+async def test_audit_syslog_tcp_noauth(manager: ScyllaClusterManager, rules_mode: bool):
+    """Syslog backend over TCP, no auth, single node."""
+    t = CQLAuditTester(manager, rules_mode=rules_mode)
+    await t._test_using_non_existent_keyspace(AuditBackendSyslogTcp)
+    await t._test_audit_keyspace(AuditBackendSyslogTcp)
+    await t._test_audit_keyspace_extra_parameter(AuditBackendSyslogTcp)
+    await t._test_audit_keyspace_many_ks(AuditBackendSyslogTcp)
+    await t._test_audit_keyspace_table_not_exists(AuditBackendSyslogTcp)
+    await t._test_audit_categories_part2(AuditBackendSyslogTcp)
+    await t._test_audit_categories_part3(AuditBackendSyslogTcp)
+    await t._test_prepare(AuditBackendSyslogTcp)
+    await t._test_batch(AuditBackendSyslogTcp)
+    await t._test_batch_native_protocol(AuditBackendSyslogTcp)
+    await t._test_empty_keyspace_ddl(AuditBackendSyslogTcp)
+
+
+# AuditBackendSyslogTcp, auth, rf=1
+
+@verify_legacy_and_rules
+async def test_audit_syslog_tcp_auth(manager: ScyllaClusterManager, rules_mode: bool):
+    """Syslog backend over TCP, auth enabled, single node."""
+    t = CQLAuditTester(manager, rules_mode=rules_mode)
+    await t._test_user_password_masking(AuditBackendSyslogTcp)
+    await t._test_role_password_masking(AuditBackendSyslogTcp)
+    await t._test_permissions(AuditBackendSyslogTcp)
+
+
+async def test_audit_syslog_tcp_multiline_query(manager: ScyllaClusterManager):
+    """A query with quotes, backslashes and a line break reaches the syslog server
+    over TCP as one line, from which it is read back unchanged."""
+    t = CQLAuditTester(manager)
+    with AuditBackendSyslogTcp() as helper:
+        session = await t.prepare(helper=helper)
+        session.execute("CREATE TABLE ks.t (p int PRIMARY KEY, v text)")
+        query = "INSERT INTO ks.t (p, v) VALUES (1, 'a \"quoted\"\nmultiline\\value')"
+        with t.assert_entries_were_added(session, [AuditEntry(category="DML", cl="ONE", error=False, ks="ks", statement=query, table="t", user="anonymous")]):
+            session.execute(query)
+
+
+async def test_audit_syslog_tcp_server_starts_late(manager: ScyllaClusterManager):
+    """A node starts while nothing listens at its audit_syslog_address, and once
+    a syslog server listens there, the node's audit messages reach it."""
+    # a bound socket that does not listen yet refuses connections, and keeps the port for later
+    reserved = socket.socket()
+    reserved.bind(("127.0.0.1", 0))
+    port = reserved.getsockname()[1]
+    helper = AuditBackendSyslogTcp()
+    helper.listener = types.SimpleNamespace(address=f"tcp://127.0.0.1:{port}")
+    await CQLAuditTester(manager).prepare_audit_server(helper, {"audit": "syslog", "audit_categories": "DDL", "audit_keyspaces": "ks"})
+    cql = manager.get_cql()
+    logger.info("Running an audited statement while nothing listens")
+    cql.execute("DROP KEYSPACE IF EXISTS ks")
+
+    helper.listener = TcpSyslogListener(reserved)
+    try:
+        query = "CREATE KEYSPACE IF NOT EXISTS ks WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1}"
+
+        def audited() -> bool:
+            cql.execute(query)
+            return any(row.operation == query for row in helper.get_audit_log_dict(cql, ConsistencyLevel.ONE)["syslog"])
+
+        logger.info("Waiting for the audit message of a statement to reach the syslog server")
+        wait_for(audited, step=0.5, timeout=60)
+    finally:
+        helper.listener.shutdown()
+
+
+async def test_audit_syslog_tcp_invalid_address_standalone(manager: ScyllaClusterManager):
+    """A node does not start with an audit_syslog_address it cannot parse."""
+    audit_settings = {"audit": "syslog", "audit_categories": "DDL", "audit_syslog_address": "127.0.0.1:514"}
+    expected_error = r"Bad configuration: invalid 'audit_syslog_address' \"127.0.0.1:514\": it must start with tcp://"
+    servers = await manager.running_servers()
+    if not servers:
+        await manager.server_add(config=audit_settings, expected_error=expected_error)
+    else:
+        srv = servers[0]
+        await manager.server_stop_gracefully(srv.server_id)
+        await manager.server_update_config(srv.server_id, config_options=audit_settings)
+        await manager.server_start(srv.server_id, expected_error=expected_error)
+
+
 _syslog = functools.partial(AuditBackendSyslog, socket_path=syslog_socket_path)
 _composite = functools.partial(AuditBackendComposite, socket_path=syslog_socket_path)
 
@@ -2756,6 +2995,8 @@ _composite = functools.partial(AuditBackendComposite, socket_path=syslog_socket_
     pytest.param(_syslog, CQLAuditTester.AuditCqlConfigChanger, id="syslog-cql"),
     pytest.param(_composite, CQLAuditTester.AuditSighupConfigChanger, id="composite-sighup"),
     pytest.param(_composite, CQLAuditTester.AuditCqlConfigChanger, id="composite-cql"),
+    pytest.param(AuditBackendSyslogTcp, CQLAuditTester.AuditSighupConfigChanger, id="syslog-tcp-sighup"),
+    pytest.param(AuditBackendSyslogTcp, CQLAuditTester.AuditCqlConfigChanger, id="syslog-tcp-cql"),
 ])
 async def test_config_no_liveupdate(manager: ScyllaClusterManager, helper_class, config_changer):
     """Non-live audit config params (audit, audit_unix_socket_path) must be unmodifiable."""
@@ -2769,6 +3010,8 @@ async def test_config_no_liveupdate(manager: ScyllaClusterManager, helper_class,
     pytest.param(_syslog, CQLAuditTester.AuditCqlConfigChanger, id="syslog-cql"),
     pytest.param(_composite, CQLAuditTester.AuditSighupConfigChanger, id="composite-sighup"),
     pytest.param(_composite, CQLAuditTester.AuditCqlConfigChanger, id="composite-cql"),
+    pytest.param(AuditBackendSyslogTcp, CQLAuditTester.AuditSighupConfigChanger, id="syslog-tcp-sighup"),
+    pytest.param(AuditBackendSyslogTcp, CQLAuditTester.AuditCqlConfigChanger, id="syslog-tcp-cql"),
 ])
 async def test_config_liveupdate(manager: ScyllaClusterManager, helper_class, config_changer):
     """Live-updatable audit config params (categories, keyspaces, tables) must be modifiable at runtime."""
@@ -2779,6 +3022,7 @@ async def test_config_liveupdate(manager: ScyllaClusterManager, helper_class, co
     pytest.param(AuditBackendTable, id="table"),
     pytest.param(_syslog, id="syslog"),
     pytest.param(_composite, id="composite"),
+    pytest.param(AuditBackendSyslogTcp, id="syslog-tcp"),
 ])
 async def test_parallel_syslog_audit(manager: ScyllaClusterManager, helper_class):
     """Cluster must not fail when multiple queries are audited in parallel."""
