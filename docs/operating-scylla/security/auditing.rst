@@ -306,6 +306,46 @@ To redirect the Syslog output to a file, follow the steps below (available only 
 #. Start rsyslog ``systemctl start rsyslog``.
 #. Enable rsyslog ``systemctl enable rsyslog``.
 
+.. _auditing-syslog-tcp-storage:
+
+Sending Audit Messages to a Syslog Server over TCP
+""""""""""""""""""""""""""""""""""""""""""""""""""
+
+Instead of the local Unix socket, audit messages can be sent over TCP to a syslog server or a log collector,
+for example where no syslog daemon runs next to ScyllaDB, as in a container.
+To do so, set ``audit_syslog_address`` together with ``audit: "syslog"``, and restart the node:
+
+.. code-block:: yaml
+
+   audit: "syslog"
+   audit_syslog_address: "tcp://syslog.example.com:514"
+
+The host can be a name or an IP address, with an IPv6 address in brackets, for example ``tcp://[2001:db8::1]:514``.
+A name is resolved again each time the node connects, and each address it resolves to is tried in turn.
+``audit_unix_socket_path`` is not used.
+
+Each shard of the node opens its own connection to the server when it first has a message to send,
+so the server must accept as many connections as all the nodes have shards in total.
+When a connection is lost or cannot be opened, the shard tries again every second; meanwhile its messages are not sent
+but written to the ScyllaDB log, as described in :ref:`Handling Audit Failures <auditing-failures>`.
+The messages are separated by line breaks, which is the non-transparent framing of RFC 6587, and the server must expect that framing.
+It must also accept long messages. A message holds the whole audited operation, escaped, together with a header
+and the other fields, and a server that limits the length of messages cuts longer ones short or splits them.
+rsyslog, for example, splits a message longer than its ``maxMessageSize``, 8 KiB by default.
+Each message carries the host name of the node, in the format of RFC 3164:
+
+.. code-block:: none
+
+   <13>Mar 18 09:53:52 ip-10-143-2-108 scylla-audit: node="10.143.2.108:0", category="DDL", cl="ONE", error="false", keyspace="nba", query="DROP TABLE nba.team_roster ;", client_ip="127.0.0.1:0", table="team_roster", username="anonymous"
+
+In the field values, double quotes, backslashes, control characters such as line breaks, and bytes that are not valid UTF-8
+are escaped, for example as ``\"``, ``\n`` or ``\xff``, so that each message is one line.
+
+.. note::
+
+   The connection is neither encrypted nor authenticated. Messages that the node has handed to the connection
+   are lost if the connection breaks before the server reads them.
+
 .. _auditing-table-storage:
 
 Storing Audit Messages in a Table
@@ -394,6 +434,8 @@ Storing Audit Messages in a Table and Syslog Simultaneously
 
 
 
+.. _auditing-failures:
+
 Handling Audit Failures
 ---------------------------
 
@@ -401,6 +443,7 @@ In some cases, auditing may not be possible, for example, when:
 
 * A table is used as the audit’s backend, and the partitions where the audit rows are saved are unavailable because the nodes holding those partitions are down or unreachable due to network issues.
 * Syslog is used as the audit’s backend, and the Syslog sink (a regular Unix socket) is unresponsive or unavailable.
+* Syslog over TCP is used as the audit’s backend, and the syslog server is unreachable or does not read the messages in time.
 
 If the audit fails and audit messages are not stored in the configured audit’s backend, you can still review the audit log in the regular ScyllaDB logs.
 
