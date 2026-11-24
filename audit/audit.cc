@@ -20,6 +20,7 @@
 #include "storage_helper.hh"
 #include "audit_cf_storage_helper.hh"
 #include "audit_syslog_storage_helper.hh"
+#include "audit_syslog_tcp_storage_helper.hh"
 #include "audit_composite_storage_helper.hh"
 #include "audit.hh"
 #include "../db/config.hh"
@@ -106,7 +107,8 @@ static void warn_on_sink_mismatch(const std::vector<audit_rule>& rules, audit_si
     }
 }
 
-static std::unique_ptr<storage_helper> create_storage_helper(audit_sink_set audit_sinks, cql3::query_processor& qp, service::migration_manager& mm) {
+static std::unique_ptr<storage_helper> create_storage_helper(audit_sink_set audit_sinks, cql3::query_processor& qp, service::migration_manager& mm,
+        seastar::scheduling_group flush_group) {
     SCYLLA_ASSERT(audit_sinks);
 
     std::vector<std::unique_ptr<storage_helper>> helpers;
@@ -114,7 +116,12 @@ static std::unique_ptr<storage_helper> create_storage_helper(audit_sink_set audi
         helpers.emplace_back(std::make_unique<audit_cf_storage_helper>(qp, mm));
     }
     if (audit_sinks.contains(audit_sink::syslog)) {
-        helpers.emplace_back(std::make_unique<audit_syslog_storage_helper>(qp, mm));
+        const auto& cfg = qp.db().get_config();
+        if (cfg.audit_syslog_address().empty()) {
+            helpers.emplace_back(std::make_unique<audit_syslog_storage_helper>(qp, mm));
+        } else {
+            helpers.emplace_back(std::make_unique<audit_syslog_tcp_storage_helper>(cfg.audit_syslog_address(), flush_group));
+        }
     }
 
     SCYLLA_ASSERT(!helpers.empty());
@@ -202,7 +209,8 @@ audit::audit(locator::shared_token_metadata& token_metadata,
              audited_tables_t&& audited_tables,
              category_set&& audited_categories,
              std::vector<audit_rule>&& audit_rules,
-             const db::config& cfg)
+             const db::config& cfg,
+             seastar::scheduling_group flush_group)
     : _token_metadata(token_metadata)
     , _audited_keyspaces(std::move(audited_keyspaces))
     , _audited_tables(std::move(audited_tables))
@@ -219,7 +227,7 @@ audit::audit(locator::shared_token_metadata& token_metadata,
     , _rules_rebuild_action([this] { return rebuild_rules(); })
 {
     _cfg_rules_observer.emplace(cfg.audit_rules.observe(_rules_rebuild_action.make_observer()));
-    _storage_helper_ptr = create_storage_helper(audit_sinks, qp, mm);
+    _storage_helper_ptr = create_storage_helper(audit_sinks, qp, mm, flush_group);
 }
 
 audit::~audit() = default;
@@ -232,7 +240,8 @@ future<> audit::rebuild_rules() {
     logger.info("Audit rules updated: {} rules configured.", _preprocessed_rules.rules().size());
 }
 
-future<> audit::start_audit(const db::config& cfg, sharded<locator::shared_token_metadata>& stm, sharded<cql3::query_processor>& qp, sharded<service::migration_manager>& mm) {
+future<> audit::start_audit(const db::config& cfg, sharded<locator::shared_token_metadata>& stm, sharded<cql3::query_processor>& qp, sharded<service::migration_manager>& mm,
+        seastar::scheduling_group flush_group) {
     audit_sink_set audit_sinks = parse_audit_sinks(cfg.audit());
     auto audit_rules = cfg.audit_rules();
 
@@ -261,7 +270,8 @@ future<> audit::start_audit(const db::config& cfg, sharded<locator::shared_token
                                   std::move(audited_tables),
                                   std::move(audited_categories),
                                   std::move(audit_rules),
-                                  std::cref(cfg));
+                                  std::cref(cfg),
+                                  flush_group);
 }
 
 future<> audit::start_storage(const db::config& cfg) {

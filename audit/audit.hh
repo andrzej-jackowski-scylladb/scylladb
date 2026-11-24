@@ -17,6 +17,7 @@
 #include "audit/preprocessed_audit_rules.hh"
 #include <seastar/core/sharded.hh>
 #include <seastar/core/gate.hh>
+#include <seastar/core/scheduling.hh>
 #include <seastar/util/log.hh>
 
 #include "enum_set.hh"
@@ -206,7 +207,9 @@ public:
     static audit& local_audit_instance() {
         return audit_instance().local();
     }
-    static future<> start_audit(const db::config& cfg, sharded<locator::shared_token_metadata>& stm, sharded<cql3::query_processor>& qp, sharded<service::migration_manager>& mm);
+    // Records sent to syslog over TCP are sent in `flush_group`.
+    static future<> start_audit(const db::config& cfg, sharded<locator::shared_token_metadata>& stm, sharded<cql3::query_processor>& qp, sharded<service::migration_manager>& mm,
+            seastar::scheduling_group flush_group);
     static future<> start_storage(const db::config& cfg);
     static future<> stop_storage();
     static future<> stop_audit();
@@ -219,7 +222,8 @@ public:
           audited_tables_t&& audited_tables,
           category_set&& audited_categories,
           std::vector<audit_rule>&& audit_rules,
-          const db::config& cfg);
+          const db::config& cfg,
+          seastar::scheduling_group flush_group);
     ~audit();
     future<> shutdown();
     bool will_log(statement_category cat, std::string_view keyspace = {}, std::string_view table = {}) const;

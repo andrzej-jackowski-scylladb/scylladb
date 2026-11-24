@@ -1994,7 +1994,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             // outlives the maintenance socket and in-flight queries can
             // still reach audit::inspect() safely.
             checkpoint(stop_signal, "starting audit service");
-            audit::audit::start_audit(*cfg, token_metadata, qp, mm).handle_exception([&] (auto&& e) {
+            audit::audit::start_audit(*cfg, token_metadata, qp, mm, dbcfg.statement_scheduling_group).handle_exception([&] (auto&& e) {
                 startlog.error("audit start failed: {}", e);
             }).get();
             auto audit_stop = defer([] noexcept {

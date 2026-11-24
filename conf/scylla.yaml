@@ -660,6 +660,10 @@ audit_categories: "DCL,DDL,AUTH,ADMIN"
 # Overrides the Unix socket path used to connect to syslog. If left unset, it'll
 # use the default on the build system, which is usually "/dev/log"
 # audit_unix_socket_path: "/dev/log"
+#
+# Sends syslog audit messages over TCP to this syslog server instead of to the
+# Unix socket, one message per line.
+# audit_syslog_address: "tcp://<host>:<port>"
 
 # Distribution of data among cores (shards) within a node
 #

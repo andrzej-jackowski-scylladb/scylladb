@@ -621,6 +621,7 @@ public:
     named_value<sstring> audit_tables;
     named_value<sstring> audit_keyspaces;
     named_value<sstring> audit_unix_socket_path;
+    named_value<sstring> audit_syslog_address;
     named_value<size_t> audit_syslog_write_buffer_size;
     named_value<std::vector<audit::audit_rule>> audit_rules;
 
