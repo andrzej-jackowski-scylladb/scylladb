@@ -13,6 +13,8 @@
 #include <charconv>
 #include <climits>
 #include <limits>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <syslog.h>
 #include <unistd.h>
 
@@ -504,6 +506,16 @@ class syslog_tcp_stream : public enable_shared_from_this<syslog_tcp_stream> {
                 throw timed_out_error();
             }
             socket.set_nodelay(true);
+            // On the posix network stack, probes keep an idle connection alive in firewalls on
+            // the way, and data that stays unacknowledged for longer than the timeout ends it.
+            socket.set_keepalive(true);
+            socket.set_keepalive_parameters(net::tcp_keepalive_params{std::chrono::seconds(60), std::chrono::seconds(10), 3});
+            unsigned user_timeout = _timeout.count();
+            try {
+                socket.set_sockopt(IPPROTO_TCP, TCP_USER_TIMEOUT, &user_timeout, sizeof(user_timeout));
+            } catch (...) {
+                // the native network stack takes no socket options, and the write deadline still applies
+            }
             _connection = make_lw_shared<syslog_tcp_connection>(std::move(socket));
         } catch (...) {
             if (timed_out) {
